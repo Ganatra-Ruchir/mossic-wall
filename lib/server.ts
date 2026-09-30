@@ -13,6 +13,8 @@ export async function statusCounts(sb:Admin,eventId:string){const q=(s:string)=>
 // recently created live event, so an old QR code or the home-page buttons still
 // reach the real wall instead of a simulation that throws uploads away.
 export async function latestLiveEventId():Promise<string|null>{const sb=supabaseAdmin();if(!sb)return null;const {data,error}=await sb.from('events').select('id').eq('status','live').order('created_at',{ascending:false}).limit(1).maybeSingle();if(error)throw error;return data?.id??null}
+/** Runs a database read for a page; on failure logs it (visible in Vercel → Logs) and returns {failed:true} so the page can show the setup check instead of crashing. */
+export async function safely<T>(what:string,fn:()=>Promise<T>):Promise<{failed:false;value:T}|{failed:true}>{try{return {failed:false,value:await fn()}}catch(e){console.error(`[${what}] database error`,e);return {failed:true}}}
 
 // Best-effort per-IP limiter. Serverless instances don't share memory, so this
 // stops a single phone spamming uploads, not a coordinated attack.

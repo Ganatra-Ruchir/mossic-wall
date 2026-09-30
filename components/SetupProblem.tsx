@@ -1,0 +1,5 @@
+import {diagnose} from '@/lib/diagnose';
+// Shown instead of a crash when the site can't use its database. Lists what to fix; never shows secret values.
+export default async function SetupProblem({where}:{where:string}){const {checks}=await diagnose();
+return <main className="grid min-h-screen place-items-center bg-[#08090b] p-6"><div className="w-full max-w-xl"><p className="text-xs uppercase tracking-[.3em] text-zinc-500">Digital Mosaic Wall · setup check</p><h1 className="mt-4 text-3xl font-semibold">The {where} can’t load yet</h1><p className="mt-3 text-zinc-400">The site can’t use its Supabase database. Fix the items marked ✗, then redeploy in Vercel (Deployments → ⋯ → Redeploy) and reload this page.</p>
+<ul className="mt-6 divide-y divide-zinc-800 rounded-2xl border border-zinc-800">{checks.map(c=><li key={c.label} className="flex gap-3 p-4 text-sm"><span className={c.ok?'text-emerald-400':'text-red-400'}>{c.ok?'✓':'✗'}</span><span><span className="font-medium">{c.label}</span><span className="mt-0.5 block text-zinc-400">{c.detail}</span></span></li>)}</ul></div></main>}
