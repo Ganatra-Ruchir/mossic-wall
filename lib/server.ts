@@ -9,7 +9,8 @@ export function fail(e:unknown,status=500){const message=e instanceof Error?e.me
 /** Use at the top of every /api/admin handler. */
 export async function adminGuard():Promise<NextResponse|null>{return (await isAdmin({cookies:await cookies()}))?null:NextResponse.json({error:'Unauthorized'},{status:401})}
 
-export async function approvedTiles(eventId:string){return q<{id:string;thumbnail_url:string;tile_index:number}>("select id,thumbnail_url,tile_index from submissions where event_id=$1 and status='approved' and tile_index is not null order by tile_index",[eventId])}
+// Arrival order: the wall lays photos out in the order they were approved.
+export async function approvedTiles(eventId:string){return q<{id:string;thumbnail_url:string;image_url:string;tile_index:number;name:string|null;message:string|null}>("select id,thumbnail_url,image_url,tile_index,name,message from submissions where event_id=$1 and status='approved' and tile_index is not null order by approved_at nulls last,created_at",[eventId])}
 export async function loadWall(eventId:string){if(!UUID.test(eventId))return null;const event=await one('select * from events where id=$1',[eventId]);if(!event)return null;return {event,tiles:await approvedTiles(eventId)}}
 export async function statusCounts(eventId:string){const r=await one<{pending:number;approved:number;rejected:number}>("select count(*) filter(where status='pending')::int pending,count(*) filter(where status='approved')::int approved,count(*) filter(where status='rejected')::int rejected from submissions where event_id=$1",[eventId]);return r??{pending:0,approved:0,rejected:0}}
 
