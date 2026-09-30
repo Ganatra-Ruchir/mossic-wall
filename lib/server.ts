@@ -1,19 +1,22 @@
 import {NextResponse} from 'next/server';
-import {supabaseAdmin} from './supabase';
-type Admin=NonNullable<ReturnType<typeof supabaseAdmin>>;
+import {cookies} from 'next/headers';
+import {isAdmin} from './auth';
+import {one, q} from './db';
+
 export const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export function fail(e:unknown,status=500){const message=e instanceof Error?e.message:e&&typeof e==='object'&&'message' in e?String((e as {message:unknown}).message):typeof e==='string'?e:'Request failed';return NextResponse.json({error:message},{status})}
-export function requireDb(){const sb=supabaseAdmin();if(!sb)throw new Error('Supabase is not configured');return sb}
-// PostgREST caps responses at 1000 rows; large grids need paging.
-export async function approvedTiles(sb:Admin,eventId:string){const out:{id:string;thumbnail_url:string;tile_index:number}[]=[];for(let from=0;;from+=1000){const {data,error}=await sb.from('submissions').select('id,thumbnail_url,tile_index').eq('event_id',eventId).eq('status','approved').not('tile_index','is',null).order('tile_index').range(from,from+999);if(error)throw error;out.push(...data);if(data.length<1000)break}return out}
-export async function loadWall(eventId:string){const sb=supabaseAdmin();if(!sb||!UUID.test(eventId))return null;const {data:event,error}=await sb.from('events').select('*').eq('id',eventId).maybeSingle();if(error)throw error;if(!event)return null;return {event,tiles:await approvedTiles(sb,eventId)}}
-export async function statusCounts(sb:Admin,eventId:string){const q=(s:string)=>sb.from('submissions').select('id',{count:'exact',head:true}).eq('event_id',eventId).eq('status',s);const [p,a,r]=await Promise.all([q('pending'),q('approved'),q('rejected')]);return {pending:p.count||0,approved:a.count||0,rejected:r.count||0}}
+export function fail(e:unknown,status=500){const message=e instanceof Error?e.message:e&&typeof e==='object'&&'message' in e?String((e as {message:unknown}).message):typeof e==='string'?e:'Request failed';if(status>=500)console.error('[api]',e);return NextResponse.json({error:message},{status})}
+
+/** Use at the top of every /api/admin handler. */
+export async function adminGuard():Promise<NextResponse|null>{return (await isAdmin({cookies:await cookies()}))?null:NextResponse.json({error:'Unauthorized'},{status:401})}
+
+export async function approvedTiles(eventId:string){return q<{id:string;thumbnail_url:string;tile_index:number}>("select id,thumbnail_url,tile_index from submissions where event_id=$1 and status='approved' and tile_index is not null order by tile_index",[eventId])}
+export async function loadWall(eventId:string){if(!UUID.test(eventId))return null;const event=await one('select * from events where id=$1',[eventId]);if(!event)return null;return {event,tiles:await approvedTiles(eventId)}}
+export async function statusCounts(eventId:string){const r=await one<{pending:number;approved:number;rejected:number}>("select count(*) filter(where status='pending')::int pending,count(*) filter(where status='approved')::int approved,count(*) filter(where status='rejected')::int rejected from submissions where event_id=$1",[eventId]);return r??{pending:0,approved:0,rejected:0}}
 
 // Links without a real event ID (?event=demo, or none at all) resolve to the most
-// recently created live event, so an old QR code or the home-page buttons still
-// reach the real wall instead of a simulation that throws uploads away.
-export async function latestLiveEventId():Promise<string|null>{const sb=supabaseAdmin();if(!sb)return null;const {data,error}=await sb.from('events').select('id').eq('status','live').order('created_at',{ascending:false}).limit(1).maybeSingle();if(error)throw error;return data?.id??null}
-/** Runs a database read for a page; on failure logs it (visible in Vercel → Logs) and returns {failed:true} so the page can show the setup check instead of crashing. */
+// recently created live event, so old QR codes and the home-page buttons still work.
+export async function latestLiveEventId():Promise<string|null>{return (await one<{id:string}>("select id from events where status='live' order by created_at desc limit 1"))?.id??null}
+/** Runs a database read for a page; on failure logs it (Vercel → Logs) so the page can show the setup check instead of crashing. */
 export async function safely<T>(what:string,fn:()=>Promise<T>):Promise<{failed:false;value:T}|{failed:true}>{try{return {failed:false,value:await fn()}}catch(e){console.error(`[${what}] database error`,e);return {failed:true}}}
 
 // Best-effort per-IP limiter. Serverless instances don't share memory, so this

@@ -3,7 +3,6 @@ import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {motion} from 'framer-motion';
 import QRCode from 'qrcode';
 import {demoSubmissions} from '@/lib/demo';
-import {supabaseBrowser} from '@/lib/supabase';
 import type {Submission,WallData,WallTile} from '@/lib/types';
 export default function MosaicWall({eventId,initial}:{eventId:string;initial?:WallData}){return initial?<LiveWall eventId={eventId} initial={initial}/>:<DemoWall eventId={eventId}/>}
 
@@ -11,9 +10,8 @@ function LiveWall({eventId,initial}:{eventId:string;initial:WallData}){const [da
 // Tiles already on screen at load appear instantly; only later arrivals fly in.
 const onLoad=useRef(new Set(initial.tiles.map(t=>t.id)));
 const refresh=useCallback(async()=>{try{const r=await fetch(`/api/wall/${eventId}`,{cache:'no-store'});if(r.ok)setData(await r.json())}catch{}},[eventId]);
-useEffect(()=>{const sb=supabaseBrowser();let t:ReturnType<typeof setTimeout>|undefined;const kick=()=>{clearTimeout(t);t=setTimeout(refresh,400)};const ch=sb?.channel(`wall-${eventId}`).on('postgres_changes',{event:'*',schema:'public',table:'submissions',filter:`event_id=eq.${eventId}`},kick).subscribe();
-// Realtime can't see rows leaving the approved state (RLS), so poll as a backstop.
-const iv=setInterval(refresh,15000);return()=>{clearTimeout(t);clearInterval(iv);if(sb&&ch)sb.removeChannel(ch)}},[eventId,refresh]);
+// New photos appear within ~3 s: poll the wall API (paused while the tab is hidden).
+useEffect(()=>{const tick=()=>{if(document.visibilityState==='visible')refresh()};const iv=setInterval(tick,3000);document.addEventListener('visibilitychange',tick);return()=>{clearInterval(iv);document.removeEventListener('visibilitychange',tick)}},[refresh]);
 useEffect(()=>{QRCode.toDataURL(`${window.location.origin}/upload?event=${eventId}`,{width:320,margin:1}).then(setQr)},[eventId]);
 const {event,tiles}=data;const total=event.rows*event.columns;const filled=tiles.length;const complete=filled>=total;const pct=Math.min(100,Math.round(filled/total*100));
 const byIndex=useMemo(()=>{const m=new Map<number,WallTile>();for(const t of tiles)m.set(t.tile_index,t);return m},[tiles]);
