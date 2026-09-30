@@ -10,7 +10,8 @@ const MAX_BYTES=4*1024*1024;
 const FORMATS=new Set(['jpeg','png','webp','gif','avif','tiff']);
 
 export async function POST(req:Request){try{
-if(rateLimited(clientIp(req)))return fail("You're uploading very quickly. Please wait a minute and try again.",429);
+// Generous: guests at one venue often share a single Wi-Fi address, and one guest may send 20 at once.
+if(rateLimited(clientIp(req),60))return fail("You're uploading very quickly. Please wait a minute and try again.",429);
 const fd=await req.formData();const file=fd.get('file');let eventId=String(fd.get('eventId')||'');
 const name=cleanText(fd.get('name'),60);const message=cleanText(fd.get('message'),140);
 if(!(file instanceof File)||file.size===0)return fail('Please choose a photo.',400);
