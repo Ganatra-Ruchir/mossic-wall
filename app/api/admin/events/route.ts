@@ -1,0 +1,4 @@
+import {NextResponse} from 'next/server';
+import {fail,requireDb} from '@/lib/server';
+export async function GET(){try{const sb=requireDb();const {data,error}=await sb.from('events').select('*').order('created_at',{ascending:false});if(error)throw error;return NextResponse.json({events:data})}catch(e){return fail(e)}}
+export async function POST(req:Request){try{const sb=requireDb();const b=await req.json();const name=String(b.name||'').trim().slice(0,120);if(!name)return fail('Event name is required',400);const rows=Math.round(Number(b.rows)||25),columns=Math.round(Number(b.columns)||30);if(rows<2||rows>100||columns<2||columns>100)return fail('Rows and columns must be between 2 and 100',400);const {data,error}=await sb.from('events').insert({name,rows,columns}).select().single();if(error)throw error;return NextResponse.json({event:data})}catch(e){return fail(e)}}

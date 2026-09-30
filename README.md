@@ -1,22 +1,26 @@
 # Digital Mosaic Wall
 
-Production-oriented Next.js + Supabase event activation based on the supplied specification. It provides `/upload`, `/wall`, and `/admin`, a Supabase SQL schema, server-side image processing, a local demo mode, and an event QR generator.
+Next.js + Supabase event activation. Guests scan a QR code, upload a photo at `/upload`, and it flies into its tile on the big-screen mosaic at `/wall`. Organisers manage events and moderate photos at `/admin`.
 
-## Run locally
+## Setup
 1. `npm install`
-2. Copy `.env.example` to `.env.local` and add Supabase credentials for production mode. Without credentials the UI still runs in demo mode.
-3. `npm run dev`
-4. Open `/upload?event=demo`, `/wall?event=demo`, `/admin?event=demo`.
+2. Copy `.env.example` to `.env.local` and fill in the Supabase URL, anon key, service role key and an `ADMIN_PASSWORD`.
+3. In the Supabase SQL Editor, run the whole of `supabase/schema.sql`. It is safe to re-run. It creates the tables, the storage buckets, the tile allocation functions and enables Realtime on `submissions`.
+4. `npm run dev`, open `/admin`, log in, create an event, upload a target image, press **Go live**.
+5. Show the QR code to guests. Open the wall link on the display.
 
-## Supabase
-Run `supabase/schema.sql` in the Supabase SQL editor. Create/verify the three public buckets named `event-targets`, `submissions`, and `thumbnails`. For production, replace the demo event with a UUID event row and use a protected admin authentication layer before exposing moderation controls.
+Without Supabase credentials, `/upload?event=demo` and `/wall?event=demo` run in a self-contained demo mode.
 
 ## Vercel
-Set the environment variables from `.env.example`, deploy the repository, and set `NEXT_PUBLIC_APP_URL` to the deployed URL.
+Import the repository and set the same environment variables (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_PASSWORD`, optionally `AUTO_APPROVE`) in Project → Settings → Environment Variables, then deploy.
 
-## Important production hardening
-- Put `/admin` behind Supabase Auth or another server-side session check.
-- Add a database function/transaction to allocate `tile_index` atomically so concurrent approvals cannot collide.
-- Subscribe `/wall` to `submissions` INSERT/UPDATE events through Supabase Realtime and fetch only thumbnails.
-- Add server-side rate limiting (for example via an edge middleware/provider) and optional image moderation before auto-approval.
-- For 2,000+ tiles, switch the CSS tile preview to a single Canvas/WebGL compositor and keep the DOM only for the animation layer.
+## How it works
+- Uploads are resized in the browser (Vercel caps request bodies at 4.5 MB), re-encoded with `sharp`, and stored in the `submissions` and `thumbnails` buckets.
+- Approval goes through the `approve_submission` database function, which locks the event row and assigns a random free tile, so concurrent approvals never collide. Rejecting frees the tile.
+- The wall subscribes to Supabase Realtime and also polls every 15 s. The target image is blended over the tiles to reveal the final picture.
+- `/admin` and `/api/admin/*` are protected by middleware using an httpOnly cookie derived from `ADMIN_PASSWORD`.
+
+## Not included yet
+- Rate limiting on `/api/upload`.
+- Automatic image moderation before auto-approval.
+- Per-tile colour matching against the target image (tiles are placed randomly and the target is overlaid).

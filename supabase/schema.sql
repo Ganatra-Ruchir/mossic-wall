@@ -15,3 +15,36 @@ create policy "public can read approved submissions" on public.submissions for s
 insert into storage.buckets(id,name,public) values ('event-targets','event-targets',true) on conflict(id) do nothing;
 insert into storage.buckets(id,name,public) values ('submissions','submissions',true) on conflict(id) do nothing;
 insert into storage.buckets(id,name,public) values ('thumbnails','thumbnails',true) on conflict(id) do nothing;
+
+-- Tile allocation: serialised per event so concurrent approvals never share a tile.
+create or replace function public.approve_submission(p_id uuid) returns public.submissions language plpgsql security definer set search_path=public as $$
+declare s public.submissions; e public.events; idx integer;
+begin
+ select * into s from public.submissions where id=p_id for update;
+ if not found then raise exception 'Submission not found'; end if;
+ if s.status='approved' and s.tile_index is not null then return s; end if;
+ select * into e from public.events where id=s.event_id for update;
+ select g into idx from generate_series(0,e.total_slots-1) g where not exists(select 1 from public.submissions x where x.event_id=e.id and x.tile_index=g) order by random() limit 1;
+ update public.submissions set status='approved',approved_at=coalesce(approved_at,now()),tile_index=idx where id=p_id returning * into s;
+ update public.events set approved_count=(select count(*) from public.submissions where event_id=e.id and status='approved' and tile_index is not null),updated_at=now() where id=e.id;
+ return s;
+end $$;
+create or replace function public.reject_submission(p_id uuid) returns public.submissions language plpgsql security definer set search_path=public as $$
+declare s public.submissions;
+begin
+ update public.submissions set status='rejected',tile_index=null where id=p_id returning * into s;
+ if not found then raise exception 'Submission not found'; end if;
+ update public.events set approved_count=(select count(*) from public.submissions where event_id=s.event_id and status='approved' and tile_index is not null),updated_at=now() where id=s.event_id;
+ return s;
+end $$;
+revoke execute on function public.approve_submission(uuid) from public, anon, authenticated;
+revoke execute on function public.reject_submission(uuid) from public, anon, authenticated;
+grant execute on function public.approve_submission(uuid) to service_role;
+grant execute on function public.reject_submission(uuid) to service_role;
+
+-- Live wall updates.
+do $$ begin
+ if not exists(select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='submissions') then
+  alter publication supabase_realtime add table public.submissions;
+ end if;
+end $$;
