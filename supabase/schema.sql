@@ -8,7 +8,9 @@ create table if not exists public.submissions(
 create index if not exists submissions_event_status_idx on public.submissions(event_id,status,created_at desc);
 create index if not exists submissions_event_tile_idx on public.submissions(event_id,tile_index);
 alter table public.events enable row level security; alter table public.submissions enable row level security;
+drop policy if exists "public can read live events" on public.events;
 create policy "public can read live events" on public.events for select using(status='live' or id::text='demo');
+drop policy if exists "public can read approved submissions" on public.submissions;
 create policy "public can read approved submissions" on public.submissions for select using(status='approved');
 insert into storage.buckets(id,name,public) values ('event-targets','event-targets',true) on conflict(id) do nothing;
 insert into storage.buckets(id,name,public) values ('submissions','submissions',true) on conflict(id) do nothing;
