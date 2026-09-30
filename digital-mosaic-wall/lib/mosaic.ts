@@ -1,5 +1,0 @@
-import type {Tile,Submission} from './types';
-export function score(a:{r:number;g:number;b:number;brightness:number},b:{r:number;g:number;b:number;brightness:number}){const rgb=Math.sqrt((a.r-b.r)**2+(a.g-b.g)**2+(a.b-b.b)**2)/441.67;return rgb*.75+Math.abs(a.brightness-b.brightness)*.25}
-export function assignTiles(tiles:Tile[], submissions:Submission[]){const available=submissions.filter(s=>s.status==='approved'&&s.tile_index==null);const used=new Set<string>();return tiles.map(tile=>{let best:{s:Submission;d:number}|null=null;for(const s of available){if(used.has(s.id))continue;const sig=signatureFromUrl(s.thumbnail_url);const d=score(tile,sig);if(!best||d<best.d)best={s,d}}if(best){used.add(best.s.id);return {tile,best:best.s}}return {tile,best:null as Submission|null}})}
-export function signatureFromUrl(_url:string){return {r:128,g:128,b:128,brightness:.5}}
-export function makeGrid(rows:number,columns:number):Tile[]{const out:Tile[]=[];for(let y=0;y<rows;y++)for(let x=0;x<columns;x++){out.push({index:y*columns+x,x,y,width:1/columns,height:1/rows,r:128,g:128,b:128,brightness:.5,dominant:'#808080'})}return out}

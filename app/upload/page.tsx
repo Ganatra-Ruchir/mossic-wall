@@ -1,9 +1,13 @@
+import {redirect} from 'next/navigation';
 import UploadClient from '@/components/UploadClient';
 import {supabaseAdmin} from '@/lib/supabase';
-import {UUID} from '@/lib/server';
+import {UUID,latestLiveEventId} from '@/lib/server';
 export const dynamic='force-dynamic';
 export default async function Upload({searchParams}:{searchParams:Promise<{event?:string}>}){const p=await searchParams;const eventId=p.event||'demo';const sb=supabaseAdmin();
-if(!sb||eventId==='demo')return <UploadClient eventId={eventId}/>;
+// No database configured: self-contained demo (nothing is saved).
+if(!sb)return <UploadClient eventId="demo"/>;
+// Demo / missing link: send the guest to the event that is live right now.
+if(eventId==='demo'){const live=await latestLiveEventId();if(live)redirect(`/upload?event=${live}`);return <Closed title="No event is live yet" text="Please scan the QR code on the big screen, or check back when the event starts."/>}
 const {data:event}=UUID.test(eventId)?await sb.from('events').select('name,status').eq('id',eventId).maybeSingle():{data:null};
 if(!event)return <Closed title="Event not found" text="Please check the link or scan the QR code again."/>;
 if(event.status!=='live')return <Closed title={event.name} text={event.status==='ended'?'This event has ended. Thanks for taking part!':'Uploads open soon. Please check back when the event starts.'}/>;
