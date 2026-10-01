@@ -1,4 +1,5 @@
 import {NextResponse} from 'next/server';
+import {createHash,randomBytes} from 'node:crypto';
 import sharp from 'sharp';
 import {databaseUrl, one, saveImage} from '@/lib/db';
 import {UUID,cleanText,clientIp,fail,latestLiveEventId,rateLimited} from '@/lib/server';
@@ -34,9 +35,23 @@ thumb=await img.clone().resize(240,240,{fit:'cover',position:'attention'}).jpeg(
 catch{return fail('Could not read that photo. Please try another one.',415)}
 
 const image_url=await saveImage(eventId,full);const thumbnail_url=await saveImage(eventId,thumb);
-const sub=await one<{id:string}>("insert into submissions(event_id,image_url,thumbnail_url,name,message,status) values($1,$2,$3,$4,$5,'pending') returning id",[eventId,image_url,thumbnail_url,name,message]);
+// A private key the guest's phone keeps, so that phone (and only it) can remove the photo later.
+const deleteToken=randomBytes(24).toString('hex');
+const sub=await one<{id:string}>("insert into submissions(event_id,image_url,thumbnail_url,name,message,status,delete_token_hash) values($1,$2,$3,$4,$5,'pending',$6) returning id",[eventId,image_url,thumbnail_url,name,message,createHash('sha256').update(deleteToken).digest('hex')]);
 let status:'pending'|'approved'|'waiting'='pending';
 if(event.auto_approve||process.env.AUTO_APPROVE==='true'){const r=await one<{tile_index:number|null}>('select tile_index from approve_submission($1)',[sub!.id]);
 // Approved but the grid is full: it waits for a free tile.
 status=r?.tile_index==null?'waiting':'approved'}
-return NextResponse.json({ok:true,id:sub!.id,eventId,status})}catch(e){return fail(e)}}
+const ev=await one<{approved_count:number;goal:number}>('select approved_count,goal from events where id=$1',[eventId]);
+return NextResponse.json({ok:true,id:sub!.id,eventId,status,deleteToken,thumbnailUrl:thumbnail_url,count:ev?.approved_count??0,goal:ev?.goal??150})}catch(e){return fail(e)}}
+
+// "Remove my photo": only the phone that uploaded it has the key.
+export async function DELETE(req:Request){try{
+if(rateLimited('del:'+clientIp(req),30))return fail('Too many requests. Please wait a minute.',429);
+const {id,token}=await req.json().catch(()=>({}));
+if(typeof id!=='string'||!UUID.test(id)||typeof token!=='string'||!/^[0-9a-f]{48}$/.test(token))return fail('Invalid request',400);
+const row=await one<{delete_token_hash:string|null}>('select delete_token_hash from submissions where id=$1',[id]);
+if(!row)return NextResponse.json({ok:true}); // already gone
+if(!row.delete_token_hash||row.delete_token_hash!==createHash('sha256').update(token).digest('hex'))return fail('This photo can only be removed from the phone that sent it.',403);
+await one('select delete_submission($1)',[id]);
+return NextResponse.json({ok:true})}catch(e){return fail(e)}}

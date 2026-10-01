@@ -88,6 +88,13 @@ export default function DesignEditor({event, onSave}: Props) {
           <Toggle label="Guest names as photos arrive" value={d.showCaptions} onChange={(v) => set('showCaptions', v)} />
           <p className="text-xs text-zinc-500">Fullscreen on the wall (F) hides all of these at once.</p>
         </Group>
+
+        <Group title="Extra moments">
+          <Toggle label="Spotlight when it’s quiet" hint="If no photos arrive for 20 seconds, show a random guest’s photo large for a few seconds" value={d.spotlight} onChange={(v) => set('spotlight', v)} />
+          <Toggle label="Milestone celebrations" hint="Banner and confetti at 25%, 50% and 75% of the goal" value={d.milestones} onChange={(v) => set('milestones', v)} />
+          <Toggle label="Close-up tour after the reveal" hint="The finished picture slowly zooms into different areas so people can find their photos" value={d.tour} onChange={(v) => set('tour', v)} />
+          <p className="text-xs text-zinc-500">Guests can also tap “Show me on the big screen” after sending a photo.</p>
+        </Group>
       </div>
 
       <div className="xl:sticky xl:top-6 xl:self-start">

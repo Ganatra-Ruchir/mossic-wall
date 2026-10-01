@@ -17,10 +17,13 @@ type View =
   | {kind: 'camera'}
   | {kind: 'shot'; blob: Blob; url: string}
   | {kind: 'batch'}
-  | {kind: 'done'; count: number; failed: number; result: Result; url?: string};
+  | {kind: 'done'; count: number; failed: number; result: Result; url?: string; spotId?: string; number?: number; goal?: number};
+
+type Sent = {result: Result; id?: string; deleteToken?: string; thumbnailUrl?: string; count?: number; goal?: number};
+type Mine = {id: string; token: string; thumb: string; at: number};
 
 /** Upload one photo with progress. */
-function send(blob: Blob, eventId: string, name: string, message: string, onProgress: (p: number) => void): Promise<Result> {
+function send(blob: Blob, eventId: string, name: string, message: string, onProgress: (p: number) => void): Promise<Sent> {
   return new Promise((resolve, reject) => {
     const fd = new FormData();
     fd.append('file', blob, 'photo.jpg');
@@ -33,8 +36,8 @@ function send(blob: Blob, eventId: string, name: string, message: string, onProg
     x.timeout = 60000;
     x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
     x.onload = () => {
-      const j = (x.response ?? {}) as {status?: string; error?: string};
-      if (x.status >= 200 && x.status < 300) resolve(j.status === 'pending' || j.status === 'waiting' || j.status === 'demo' ? j.status : 'approved');
+      const j = (x.response ?? {}) as {status?: string; error?: string; id?: string; deleteToken?: string; thumbnailUrl?: string; count?: number; goal?: number};
+      if (x.status >= 200 && x.status < 300) resolve({result: j.status === 'pending' || j.status === 'waiting' || j.status === 'demo' ? j.status : 'approved', id: j.id, deleteToken: j.deleteToken, thumbnailUrl: j.thumbnailUrl, count: j.count, goal: j.goal});
       else reject(new Error(j.error || `Upload failed (${x.status})`));
     };
     x.onerror = () => reject(new Error('No connection. Check your signal and try again.'));
@@ -58,6 +61,26 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
   const [flash, setFlash] = useState(false);
+  const [prog, setProg] = useState<{count: number; goal: number} | null>(null);
+  const [mine, setMine] = useState<Mine[]>([]);
+  const [showMine, setShowMine] = useState(false);
+  const mineKey = `mosaic_mine_${eventId}`;
+
+  // My photos on this phone (ids + private remove keys), kept in this browser only.
+  useEffect(() => { try { setMine(JSON.parse(localStorage.getItem(mineKey) || '[]')); } catch { /* ignore */ } }, [mineKey]);
+  const saveMine = (list: Mine[]) => { setMine(list); try { localStorage.setItem(mineKey, JSON.stringify(list.slice(-50))); } catch { /* ignore */ } };
+  const remember = (r: Sent) => { if (r.id && r.deleteToken) saveMine([...mineRef.current, {id: r.id, token: r.deleteToken, thumb: r.thumbnailUrl || '', at: Date.now()}]); };
+  const mineRef = useRef<Mine[]>([]);
+  useEffect(() => { mineRef.current = mine; }, [mine]);
+
+  // Live progress: "37 of 150 photos".
+  useEffect(() => {
+    if (eventId === 'demo') return;
+    const get = () => fetch(`/api/progress?event=${eventId}`, {cache: 'no-store'}).then((r) => (r.ok ? r.json() : null)).then((j) => j && setProg({count: j.count, goal: j.goal})).catch(() => {});
+    get();
+    const iv = setInterval(get, 15000);
+    return () => clearInterval(iv);
+  }, [eventId]);
 
   useEffect(() => { try { setName(localStorage.getItem(NAME_KEY) ?? ''); } catch { /* private mode */ } }, []);
   const rememberName = (n: string) => { setName(n); try { localStorage.setItem(NAME_KEY, n); } catch { /* ignore */ } };
@@ -114,9 +137,11 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
   async function sendShot(v: Extract<View, {kind: 'shot'}>) {
     setBusy(true); setError(''); setProgress(0);
     try {
-      const result = await send(v.blob, eventId, name, message, setProgress);
+      const r = await send(v.blob, eventId, name, message, setProgress);
+      remember(r);
+      if (r.count !== undefined && r.goal) setProg({count: r.count, goal: r.goal});
       setMessage('');
-      setView({kind: 'done', count: 1, failed: 0, result, url: v.url});
+      setView({kind: 'done', count: 1, failed: 0, result: r.result, url: v.url, spotId: r.result === 'approved' ? r.id : undefined, number: r.result === 'approved' ? r.count : undefined, goal: r.goal});
       navigator.vibrate?.(20);
     } catch (e) { setError(e instanceof Error ? e.message : 'Upload failed'); }
     finally { setBusy(false); }
@@ -124,13 +149,15 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
 
   async function sendBatch() {
     setBusy(true); setError('');
-    let ok = 0, failed = 0, last: Result = 'approved';
+    let ok = 0, failed = 0, last: Result = 'approved', firstOnWall: Sent | null = null, latest: Sent | null = null;
     for (const it of items) {
       if (it.state === 'done') { ok++; continue; }
       setItems((xs) => xs.map((x) => (x.id === it.id ? {...x, state: 'sending', progress: 0, error: undefined} : x)));
       try {
         const blob = await shrinkImage(it.file);
-        last = await send(blob, eventId, name, message, (p) => setItems((xs) => xs.map((x) => (x.id === it.id ? {...x, progress: p} : x))));
+        const r = await send(blob, eventId, name, message, (p) => setItems((xs) => xs.map((x) => (x.id === it.id ? {...x, progress: p} : x))));
+        last = r.result; latest = r; remember(r);
+        if (r.result === 'approved' && !firstOnWall) firstOnWall = r;
         ok++;
         setItems((xs) => xs.map((x) => (x.id === it.id ? {...x, state: 'done', progress: 1} : x)));
       } catch (e) {
@@ -139,7 +166,9 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
       }
     }
     setBusy(false);
-    if (failed === 0) { setMessage(''); setView({kind: 'done', count: ok, failed, result: last, url: items[0]?.url}); navigator.vibrate?.(20); }
+    const lr = latest as Sent | null;
+    if (lr?.count !== undefined && lr.goal) setProg({count: lr.count, goal: lr.goal});
+    if (failed === 0) { setMessage(''); setView({kind: 'done', count: ok, failed, result: last, url: items[0]?.url, spotId: (firstOnWall as Sent | null)?.id, goal: lr?.goal}); navigator.vibrate?.(20); }
     else setError(failed === items.length ? 'None of the photos went through. Check your connection and tap Retry.' : `${ok} sent, ${failed} didn’t go through. Tap Retry to try those again.`);
   }
 
@@ -185,7 +214,7 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
               <button type="button" onClick={() => galleryRef.current?.click()} className="mt-3 w-full max-w-xs rounded-full border border-white/40 py-4 text-[17px] font-[650]">Choose from gallery</button>
             </div>
           )}
-          <TopBar eventName={eventName} />
+          <TopBar eventName={eventName} prog={prog} mineCount={mine.length} onMine={() => setShowMine(true)} />
           {camera !== 'denied' && camera !== 'unavailable' && (
             <div className="absolute inset-x-0 bottom-0 flex items-center justify-between px-8 pb-[max(28px,env(safe-area-inset-bottom))] pt-6" style={{background: 'linear-gradient(transparent, rgba(0,0,0,.55))'}}>
               <button type="button" aria-label="Choose photos from your gallery" onClick={() => galleryRef.current?.click()}
@@ -221,6 +250,7 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
           <Fields name={name} setName={rememberName} message={message} setMessage={setMessage} disabled={busy} />
           {error && <p role="alert" className="mt-3 rounded-2xl bg-[#ff3d8b]/20 px-4 py-3 text-[14px] text-[#ffd1e3]">{error}</p>}
           <PrimaryButton onClick={() => sendShot(view)} busy={busy} progress={progress} label="Add to the mosaic" />
+          <Consent />
           <div className="mt-3 flex gap-3">
             <button type="button" onClick={backToCamera} disabled={busy} className="flex-1 rounded-full border border-white/35 py-3.5 text-[16px] font-[650]">Retake</button>
             <button type="button" onClick={() => saveToPhone(view.blob)} disabled={busy} className="flex-1 rounded-full border border-white/35 py-3.5 text-[16px] font-[650]">Save to my phone</button>
@@ -255,21 +285,37 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
           <PrimaryButton onClick={sendBatch} busy={busy} disabled={!items.length}
             label={items.some((i) => i.state === 'error') ? 'Retry' : items.length === 1 ? 'Add 1 photo to the mosaic' : `Add ${items.length} photos to the mosaic`}
             progress={items.length ? items.filter((i) => i.state === 'done').length / items.length : 0} />
+          <Consent />
           <button type="button" onClick={backToCamera} disabled={busy} className="mt-3 w-full rounded-full border border-white/35 py-3.5 text-[16px] font-[650]">Back to camera</button>
         </Sheet>
       )}
 
       {/* ——— Sent ——— */}
       {view.kind === 'done' && <Done view={view} onAgain={backToCamera} />}
+      {showMine && <MyPhotos mine={mine} onClose={() => setShowMine(false)} onRemoved={(id) => saveMine(mine.filter((m) => m.id !== id))} />}
     </main>
   );
 }
 
-function TopBar({eventName}: {eventName?: string}) {
+function TopBar({eventName, prog, mineCount, onMine}: {eventName?: string; prog: {count: number; goal: number} | null; mineCount: number; onMine: () => void}) {
+  const pct = prog ? Math.min(100, (prog.count / Math.max(1, prog.goal)) * 100) : 0;
   return (
-    <div className="absolute inset-x-0 top-0 px-5 pb-8 pt-[max(18px,env(safe-area-inset-top))]" style={{background: 'linear-gradient(rgba(0,0,0,.55), transparent)'}}>
-      <p className="text-[15px] font-[650] text-white/85">{eventName || 'Digital Mosaic Wall'}</p>
-      <p className="mt-0.5 text-[22px] font-[750] leading-tight">Add your photo to the big picture</p>
+    <div className="absolute inset-x-0 top-0 px-5 pb-8 pt-[max(18px,env(safe-area-inset-top))]" style={{background: 'linear-gradient(rgba(0,0,0,.6), transparent)'}}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-[15px] font-[650] text-white/85">{eventName || 'Digital Mosaic Wall'}</p>
+          <p className="mt-0.5 text-[22px] font-[750] leading-tight">Add your photo to the big picture</p>
+        </div>
+        {mineCount > 0 && (
+          <button type="button" onClick={onMine} className="shrink-0 rounded-full bg-white/20 px-3.5 py-2 text-[13px] font-[650] backdrop-blur">My photos ({mineCount})</button>
+        )}
+      </div>
+      {prog && (
+        <div className="mt-3 flex items-center gap-3">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/25"><div className="h-full rounded-full" style={{width: `${pct}%`, background: 'var(--accent)'}} /></div>
+          <p className="shrink-0 text-[13px] font-[650] text-white/90">{prog.count >= prog.goal ? `${prog.count} photos, picture complete!` : `${prog.count} of ${prog.goal} photos`}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -332,7 +378,9 @@ function Done({view, onAgain}: {view: Extract<View, {kind: 'done'}>; onAgain: ()
       </motion.div>
       <motion.h2 initial={{opacity: 0, y: 12}} animate={{opacity: 1, y: 0}} transition={{delay: 0.25}} className="mt-8 text-[32px] font-[800] leading-tight">{title}</motion.h2>
       <motion.p initial={{opacity: 0}} animate={{opacity: 1}} transition={{delay: 0.45}} className="mt-3 max-w-xs text-[16px] text-white/80">{text}</motion.p>
-      <button type="button" onClick={onAgain} className="mt-10 w-full max-w-xs rounded-full bg-white py-4 text-[17px] font-[750] text-[#2b0a4a]">{view.count > 1 ? 'Add more photos' : 'Take another photo'}</button>
+      {view.number && view.goal && view.count === 1 ? <p className="mt-3 rounded-full bg-white/15 px-4 py-1.5 text-[14px] font-[650]">You’re photo #{view.number} of {view.goal}</p> : null}
+      {view.spotId && <SpotlightButton id={view.spotId} />}
+      <button type="button" onClick={onAgain} className="mt-4 w-full max-w-xs rounded-full bg-white py-4 text-[17px] font-[750] text-[#2b0a4a]">{view.count > 1 ? 'Add more photos' : 'Take another photo'}</button>
     </div>
   );
 }
@@ -347,4 +395,72 @@ function GalleryIcon() {
 }
 function FlipIcon() {
   return <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8" /><path d="M4 3v5h5" /><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16" /><path d="M20 21v-5h-5" /></svg>;
+}
+
+function Consent() {
+  return <p className="mt-3 text-center text-[12px] text-white/60">Your photo will be shown on the event screen. You can remove it later from this phone.</p>;
+}
+
+/** "Show me on the big screen": the wall zooms this photo to the centre for a few seconds. */
+function SpotlightButton({id}: {id: string}) {
+  const [state, setState] = useState<'idle' | 'busy' | 'ok' | string>('idle');
+  async function go() {
+    setState('busy');
+    try {
+      const r = await fetch('/api/spotlight', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id})});
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'Try again in a moment.');
+      setState('ok');
+      setTimeout(() => setState('idle'), 8000);
+    } catch (e) { setState(e instanceof Error ? e.message : 'Try again in a moment.'); setTimeout(() => setState('idle'), 4000); }
+  }
+  return (
+    <div className="mt-8 w-full max-w-xs">
+      <button type="button" onClick={go} disabled={state !== 'idle'}
+        className="w-full rounded-full py-4 text-[17px] font-[750] text-white disabled:opacity-80" style={{background: 'linear-gradient(90deg,#8a2be2,var(--accent))'}}>
+        {state === 'busy' ? 'Sending to the big screen…' : state === 'ok' ? 'Look up! You’re on the big screen' : 'Show me on the big screen'}
+      </button>
+      {state !== 'idle' && state !== 'busy' && state !== 'ok' && <p className="mt-2 text-[13px] text-white/75">{state}</p>}
+    </div>
+  );
+}
+
+/** Photos sent from this phone; each can be removed (only this phone has the key). */
+function MyPhotos({mine, onClose, onRemoved}: {mine: Mine[]; onClose: () => void; onRemoved: (id: string) => void}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  async function remove(m: Mine) {
+    if (!window.confirm('Remove this photo from the wall? This can’t be undone.')) return;
+    setBusy(m.id); setError('');
+    try {
+      const r = await fetch('/api/upload', {method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: m.id, token: m.token})});
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'Couldn’t remove it. Try again.');
+      onRemoved(m.id);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Couldn’t remove it.'); }
+    finally { setBusy(null); }
+  }
+  return (
+    <div className="absolute inset-0 z-20 overflow-y-auto bg-[var(--bg)]">
+      <div className="mx-auto w-full max-w-md px-5 pb-[max(24px,env(safe-area-inset-bottom))] pt-[max(20px,env(safe-area-inset-top))]">
+        <div className="flex items-center justify-between">
+          <h2 className="text-[24px] font-[750]">My photos</h2>
+          <button type="button" onClick={onClose} className="rounded-full border border-white/35 px-4 py-2 text-[14px] font-[650]">Done</button>
+        </div>
+        <p className="mt-1 text-[14px] text-white/70">Photos you sent from this phone. Removing one takes it off the wall.</p>
+        {error && <p role="alert" className="mt-3 rounded-2xl bg-[#ff3d8b]/20 px-4 py-3 text-[14px] text-[#ffd1e3]">{error}</p>}
+        {mine.length === 0 ? <p className="mt-10 text-center text-white/60">No photos from this phone yet.</p> : (
+          <ul className="mt-5 grid grid-cols-2 gap-3">
+            {[...mine].reverse().map((m) => (
+              <li key={m.id} className="overflow-hidden rounded-2xl bg-white/10">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                {m.thumb ? <img src={m.thumb} alt="" className="aspect-square w-full object-cover" /> : <div className="aspect-square w-full" />}
+                <button type="button" onClick={() => remove(m)} disabled={busy === m.id} className="w-full py-2.5 text-[14px] font-[650] text-[#ffb3cf] disabled:opacity-50">{busy === m.id ? 'Removing…' : 'Remove'}</button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
 }

@@ -84,6 +84,11 @@ alter table events add column if not exists fly_from text not null default 'rand
 -- Wall design (Admin → Design) and a counter the admin bumps to play the reveal on every open wall.
 alter table events add column if not exists design jsonb not null default '{}'::jsonb;
 alter table events add column if not exists reveal_token integer not null default 0;
+-- "Show me on the big screen": the photo a guest asked to spotlight, and when.
+alter table events add column if not exists spotlight_id uuid;
+alter table events add column if not exists spotlight_at timestamptz;
+-- Lets the phone that uploaded a photo remove it again (only a hash is stored).
+alter table submissions add column if not exists delete_token_hash text;
 
 -- Approving: take a random free tile if there is one, otherwise stay approved and wait (tile_index null).
 create or replace function approve_submission(p_id uuid) returns submissions language plpgsql as $$

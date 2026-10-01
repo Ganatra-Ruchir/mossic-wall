@@ -22,6 +22,8 @@ export default function LiveMosaic({eventId, initial, demo = false, preview = fa
   const [count, setCount] = useState(0);
   const [phase, setPhase] = useState<'gallery' | 'revealing' | 'mosaic'>('gallery');
   const [flying, setFlying] = useState<WallPhoto | null>(null);
+  const [spot, setSpot] = useState<WallPhoto | null>(null);
+  const [milestone, setMilestone] = useState<{key: number; title: string; text: string} | null>(null);
   const [qr, setQr] = useState('');
   const [clean, setClean] = useState(false); // fullscreen: only the mosaic
   const [idle, setIdle] = useState(false);   // hide the cursor and button when the mouse rests
@@ -38,7 +40,7 @@ export default function LiveMosaic({eventId, initial, demo = false, preview = fa
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const e = new WallEngine(canvas, goal, {onCount: setCount, onPhase: setPhase, onFlight: setFlying}, Number(event?.animation_speed) || 1);
+    const e = new WallEngine(canvas, goal, {onCount: setCount, onPhase: setPhase, onFlight: setFlying, onSpotlight: setSpot}, Number(event?.animation_speed) || 1);
     engineRef.current = e;
     e.setTarget(event?.target_image_url || DEFAULT_TARGET);
     const place = () => {
@@ -67,6 +69,35 @@ export default function LiveMosaic({eventId, initial, demo = false, preview = fa
     const t = event?.reveal_token ?? 0;
     if (t > seenToken.current) { seenToken.current = t; engineRef.current?.reveal(); }
   }, [event?.reveal_token]);
+
+  // "Show me on the big screen" from a guest's phone: a new spotlight request since we loaded.
+  const seenSpot = useRef(initial?.event.spotlight_at ?? null);
+  useEffect(() => {
+    const at = event?.spotlight_at ?? null, id = event?.spotlight_id;
+    if (!at || at === seenSpot.current || !id) return;
+    seenSpot.current = at;
+    engineRef.current?.spotlight(id);
+  }, [event?.spotlight_at, event?.spotlight_id]);
+
+  // Milestones: banner + confetti when the wall passes 25 %, 50 % and 75 % of the goal (not on page load).
+  const lastCount = useRef<number | null>(null);
+  useEffect(() => {
+    const t = setTimeout(() => { if (lastCount.current === null) lastCount.current = count; }, 2500);
+    return () => clearTimeout(t);
+  }, [count]);
+  useEffect(() => {
+    const prev = lastCount.current;
+    if (prev === null) return;
+    lastCount.current = count;
+    if (!design.milestones || phase !== 'gallery' || count <= prev) return;
+    const hit = [0.75, 0.5, 0.25].find((f) => prev < Math.ceil(goal * f) && count >= Math.ceil(goal * f));
+    if (!hit) return;
+    const left = Math.max(0, goal - count);
+    setMilestone({key: Date.now(), title: hit === 0.5 ? 'Halfway there!' : hit === 0.25 ? 'A quarter of the way!' : 'Almost there!', text: `${left} more photo${left === 1 ? '' : 's'} until the big picture`});
+    engineRef.current?.celebrate();
+    const t = setTimeout(() => setMilestone(null), 4500);
+    return () => clearTimeout(t);
+  }, [count]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Preview mode (inside the admin Design editor): settings and reveal arrive by postMessage.
   useEffect(() => {
@@ -193,6 +224,32 @@ export default function LiveMosaic({eventId, initial, demo = false, preview = fa
           <motion.div key={flying.id} initial={{opacity: 0, y: 20}} animate={{opacity: 1, y: 0}} exit={{opacity: 0, y: -10}}
             className="pointer-events-none absolute left-1/2 top-[3.6vh] max-w-[40vw] -translate-x-1/2 truncate rounded-full bg-white px-[2.4vh] py-[1.1vh] text-[2.3vh] font-[650] text-[#2b0a4a] shadow-[0_1vh_3vh_rgba(20,0,40,.3)]">
             {flying.name} joined the picture{flying.message ? `: “${flying.message}”` : ''}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Spotlight caption: who this photo is from. */}
+      <AnimatePresence>
+        {spot && (spot.name || spot.message) && (
+          <motion.div key={spot.id} initial={{opacity: 0, y: 14}} animate={{opacity: 1, y: 0, transition: {delay: 0.45}}} exit={{opacity: 0}}
+            className="pointer-events-none absolute inset-x-0 top-[76vh] text-center" style={{textShadow: "0 0.4vh 2vh rgba(0,0,0,.8)"}}>
+            {spot.name && <p className="text-[4.4vh] font-[800] leading-none">{spot.name}</p>}
+            {spot.message && <p className="mx-auto mt-[1.2vh] max-w-[60vw] text-[2.6vh] font-[500] text-white/85">“{spot.message}”</p>}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Milestone banner. */}
+      <AnimatePresence>
+        {milestone && !clean && (
+          <motion.div key={milestone.key} className="pointer-events-none absolute inset-0 flex items-center justify-center" initial={{opacity: 0}} animate={{opacity: 1}} exit={{opacity: 0}}>
+            {/* Centred by the flex parent: the spring scale animation would override a translate-based centre. */}
+            <motion.div initial={{scale: 0.8}} animate={{scale: 1}} exit={{scale: 0.95}} transition={{type: 'spring', stiffness: 200, damping: 16}}
+              className="rounded-[3vh] px-[5vh] py-[3vh] text-center shadow-[0_2vh_6vh_rgba(0,0,0,.45)]"
+              style={{background: `linear-gradient(135deg, ${design.accent}, #8a2be2)`}}>
+              <p className="text-[7vh] font-[800] leading-none tracking-[-0.02em]">{milestone.title}</p>
+              <p className="mt-[1.4vh] text-[2.8vh] font-[600] text-white/90">{milestone.text}</p>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

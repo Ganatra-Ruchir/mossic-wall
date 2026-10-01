@@ -34,6 +34,10 @@ export type Design = {
   showQr: boolean;
   showCounter: boolean;
   showCaptions: boolean;   // "Priya joined the picture"
+  // Extras
+  spotlight: boolean;      // show a random photo large when no new photos arrive for a while
+  milestones: boolean;     // banner + confetti at 25 %, 50 %, 75 % of the goal
+  tour: boolean;           // slow close-up zooms over the finished picture
 };
 
 export const DEFAULT_DESIGN: Design = {
@@ -42,6 +46,7 @@ export const DEFAULT_DESIGN: Design = {
   mosaicGap: 0, mosaicFill: 100, pictureStrength: 50,
   speed: 1, arrival: 'loop', flyFrom: 'random', confetti: true,
   showTitle: true, tagline: '', showQr: true, showCounter: true, showCaptions: true,
+  spotlight: true, milestones: true, tour: true,
 };
 
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -79,5 +84,8 @@ export function normalizeDesign(input: unknown, legacy?: {fly_from?: string | nu
     showQr: bool(i.showQr, D.showQr),
     showCounter: bool(i.showCounter, D.showCounter),
     showCaptions: bool(i.showCaptions, D.showCaptions),
+    spotlight: bool(i.spotlight, D.spotlight),
+    milestones: bool(i.milestones, D.milestones),
+    tour: bool(i.tour, D.tour),
   };
 }

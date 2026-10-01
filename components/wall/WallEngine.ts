@@ -28,6 +28,7 @@ type Tile = {
   pop: number; // landing bounce start time
   placed: boolean;
   cell: number; // mosaic cell index
+  meta: WallPhoto;
 };
 
 type Flight = {tile: Tile; t0: number; dur: number; pts: {x: number; y: number}[]; s0: number; photo: WallPhoto};
@@ -37,6 +38,7 @@ export type EngineCallbacks = {
   onCount?: (placed: number) => void;
   onPhase?: (phase: 'gallery' | 'revealing' | 'mosaic') => void;
   onFlight?: (photo: WallPhoto | null) => void;
+  onSpotlight?: (photo: WallPhoto | null) => void;
 };
 
 const PALETTE = ['#ff3d8b', '#ffb000', '#00d1ff', '#8a2be2', '#35e0a1', '#ff6a3d', '#ffffff'];
@@ -112,7 +114,15 @@ export class WallEngine {
   private flyFrom: FlySide = 'random';
   // Look & motion (Admin → Design). Percentages are of the tile size.
   private d = {frame: true, frameColor: '#ffffff', frameWidth: 4, corner: 6, shadow: true, tilt: false, photoSize: 100, gap: 9,
-    mosaicGap: 0, mosaicFill: 100, pictureStrength: 50, arrival: 'loop' as 'loop' | 'direct' | 'pop', confetti: true};
+    mosaicGap: 0, mosaicFill: 100, pictureStrength: 50, arrival: 'loop' as 'loop' | 'direct' | 'pop', confetti: true, spotlight: true, tour: true};
+  private spot: {tile: Tile; t0: number; from: Rect} | null = null;
+  private lastActivity = performance.now();
+  private lastSpot = 0;
+  private mosaicSince = 0;
+  private cam = {z: 1, fx: 0, fy: 0};
+  private camTween: {from: {z: number; fx: number; fy: number}; to: {z: number; fx: number; fy: number}; t0: number; dur: number} | null = null;
+  private tourNext = 0;
+
 
   constructor(private canvas: HTMLCanvasElement, private goal: number, private cb: EngineCallbacks = {}, private speed = 1) {
     this.ctx = canvas.getContext('2d')!;
@@ -196,7 +206,7 @@ export class WallEngine {
   // ——— tiles ———
 
   private newTile(p: WallPhoto): Tile {
-    const t: Tile = {id: p.id, img: null, fullImg: null, color: null, pos: {x: this.w / 2, y: this.h / 2, s: 0, r: 0}, tween: null, alpha: 1, pop: 0, placed: false, cell: -1};
+    const t: Tile = {id: p.id, img: null, fullImg: null, color: null, pos: {x: this.w / 2, y: this.h / 2, s: 0, r: 0}, tween: null, alpha: 1, pop: 0, placed: false, cell: -1, meta: p};
     loadImage(p.thumb).then((img) => { t.img = img; t.color = averageColor(img); this.dirty = true; if (this.phase === 'mosaic') this.assignLate(t); }).catch(() => {});
     t.fullUrl = p.full;
     return t;
@@ -219,6 +229,7 @@ export class WallEngine {
   }
 
   private addInstant(p: WallPhoto) {
+    this.lastActivity = performance.now();
     const t = this.newTile(p);
     t.placed = true;
     this.tiles.push(t);
@@ -333,6 +344,7 @@ export class WallEngine {
     if (now - this.lastLaunch < gap || this.flights.length >= 5) return;
     this.lastLaunch = now;
     const photo = this.queue.shift()!;
+    this.lastActivity = now;
     if (this.d.arrival === 'pop') { this.popIn(photo, now); return; }
     const tile = this.newTile(photo);
     const dur = (backlog > 10 ? 1900 : backlog > 3 ? 2600 : 3300) / this.speed;
@@ -558,6 +570,8 @@ export class WallEngine {
       this.overlayGoal = this.d.pictureStrength / 100;
       const b = this.mosaicBounds();
       for (let i = 0; i < 6; i++) setTimeout(() => this.burst(b.x + Math.random() * b.w, b.y + Math.random() * b.h, 160, 40), i * 180);
+      this.mosaicSince = performance.now();
+      this.tourNext = this.mosaicSince + 11000;
       this.cb.onPhase?.('mosaic');
     }, total);
   }
@@ -570,7 +584,9 @@ export class WallEngine {
     if (this.revealAt && now >= this.revealAt) this.startReveal();
     this.launch(now);
     this.upgrade(now);
-    const active = this.flights.length || this.particles.length || this.tiles.some((t) => t.tween || now - t.pop < 500) || Math.abs(this.overlay - this.overlayGoal) > 0.002;
+    this.autoSpotlight(now);
+    this.tourStep(now);
+    const active = this.flights.length || this.particles.length || this.spot || this.camTween || this.tiles.some((t) => t.tween || now - t.pop < 500) || Math.abs(this.overlay - this.overlayGoal) > 0.002;
     if (!active && !this.dirty) return;
     this.dirty = false;
     this.overlay += (this.overlayGoal - this.overlay) * 0.04;
@@ -582,6 +598,8 @@ export class WallEngine {
     c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     c.clearRect(0, 0, this.w, this.h);
     const mosaic = this.phase !== 'gallery';
+    const cam = this.camera(now);
+    if (cam.z !== 1) c.setTransform(this.dpr * cam.z, 0, 0, this.dpr * cam.z, this.dpr * (this.w / 2 - cam.fx * cam.z), this.dpr * (this.h / 2 - cam.fy * cam.z));
 
     if (mosaic) {
       // Each cell shows its owner (duplicates included), edge to edge; a cell waits until its photo has landed.
@@ -647,6 +665,94 @@ export class WallEngine {
       else { c.beginPath(); c.arc(0, 0, q.size / 2, 0, Math.PI * 2); c.fill(); }
       c.restore();
     }
+    c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.drawSpotlight(now);
+  }
+
+  // ——— spotlight: one photo large in the centre for a few seconds ———
+
+  /** Called for a guest's "Show me on the big screen", or automatically when the wall is quiet. */
+  spotlight(id: string) {
+    const t = this.byId.get(id);
+    if (!t || !t.placed || this.phase === 'revealing') return false;
+    const now = performance.now();
+    if (this.spot && now - this.spot.t0 < 4900) return false;
+    const r = this.phase === 'gallery' ? this.current(t, now) : t.cell >= 0 ? this.cellRect(t.cell) : null;
+    if (!r) return false;
+    const cam = this.camera(now); // where the tile is on screen right now
+    const from = {x: (r.x - cam.fx) * cam.z + this.w / 2, y: (r.y - cam.fy) * cam.z + this.h / 2, s: r.s * cam.z};
+    this.spot = {tile: t, t0: now, from};
+    this.lastSpot = now;
+    this.cb.onSpotlight?.(t.meta);
+    return true;
+  }
+
+  private autoSpotlight(now: number) {
+    if (!this.d.spotlight || this.spot || this.phase === 'revealing' || this.flights.length || this.queue.length) return;
+    if (this.phase === 'mosaic' && now - this.mosaicSince < 9000) return; // let the reveal breathe
+    if (now - this.lastActivity < 20000 || now - this.lastSpot < 20000) return;
+    const placed = this.tiles.filter((t) => t.placed && t.img);
+    if (placed.length < 6) return;
+    const pick = placed[Math.floor(Math.random() * placed.length)];
+    if (!this.spotlight(pick.id)) this.lastSpot = now;
+  }
+
+  private drawSpotlight(now: number) {
+    const sp = this.spot;
+    if (!sp) return;
+    const age = now - sp.t0, IN = 700, HOLD = 3500, OUT = 700;
+    if (age > IN + HOLD + OUT) { this.spot = null; this.cb.onSpotlight?.(null); this.dirty = true; return; }
+    const k = age < IN ? easeInOut(age / IN) : age < IN + HOLD ? 1 : 1 - easeInOut((age - IN - HOLD) / OUT);
+    const big = Math.min(this.h * 0.56, this.w * 0.42);
+    const c = this.ctx;
+    c.save();
+    c.globalAlpha = 0.55 * k;
+    c.fillStyle = '#0a0214';
+    c.fillRect(0, 0, this.w, this.h);
+    c.restore();
+    const x = sp.from.x + (this.w / 2 - sp.from.x) * k;
+    const y = sp.from.y + (this.h * 0.46 - sp.from.y) * k;
+    const size = sp.from.s + (big - sp.from.s) * k;
+    this.drawImageCell(sp.tile, x, y, size, 0, 1, false, true);
+  }
+
+  // ——— close-up tour over the finished picture ———
+
+  private camera(now: number) {
+    const ct = this.camTween;
+    if (!ct) return this.cam.z === 1 ? {z: 1, fx: this.w / 2, fy: this.h / 2} : this.cam;
+    const k = clamp((now - ct.t0) / ct.dur, 0, 1), e = easeInOut(k);
+    const v = {z: ct.from.z + (ct.to.z - ct.from.z) * e, fx: ct.from.fx + (ct.to.fx - ct.from.fx) * e, fy: ct.from.fy + (ct.to.fy - ct.from.fy) * e};
+    if (k >= 1) { this.cam = {...ct.to}; this.camTween = null; }
+    return v;
+  }
+
+  private moveCamera(to: {z: number; fx: number; fy: number}, dur: number) {
+    const now = performance.now();
+    this.camTween = {from: this.camera(now), to, t0: now, dur};
+  }
+
+  private tourStep(now: number) {
+    const zoomed = this.cam.z > 1.01 || this.camTween;
+    if (this.phase !== 'mosaic' || !this.d.tour) { if (zoomed && !this.camTween) this.moveCamera({z: 1, fx: this.w / 2, fy: this.h / 2}, 1200); return; }
+    if (this.spot || this.camTween || now < this.tourNext) return;
+    if (this.cam.z > 1.01) {
+      this.moveCamera({z: 1, fx: this.w / 2, fy: this.h / 2}, 2600 / this.speed);
+      this.tourNext = now + (2600 + 8000) / this.speed;
+    } else {
+      // Zoom into a random area of the picture, kept fully inside the mosaic.
+      const z = 2.4, b = this.mosaicBounds();
+      const hw = this.w / (2 * z), hh = this.h / (2 * z);
+      const fx = b.w > hw * 2 ? b.x + hw + Math.random() * (b.w - hw * 2) : b.x + b.w / 2;
+      const fy = b.h > hh * 2 ? b.y + hh + Math.random() * (b.h - hh * 2) : b.y + b.h / 2;
+      this.moveCamera({z, fx, fy}, 2600 / this.speed);
+      this.tourNext = now + (2600 + 4500) / this.speed;
+    }
+  }
+
+  /** Milestone celebration: confetti bursts across the screen. */
+  celebrate() {
+    for (let i = 0; i < 5; i++) setTimeout(() => { if (!this.destroyed) this.burst(this.w * (0.15 + Math.random() * 0.7), this.h * (0.2 + Math.random() * 0.5), 180, 36); }, i * 160);
   }
 
   /** framed = white print border + shadow (gallery / flights); plain = edge-to-edge mosaic cell. */
