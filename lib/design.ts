@@ -38,6 +38,7 @@ export type Design = {
   spotlight: boolean;      // show a random photo large when no new photos arrive for a while
   milestones: boolean;     // banner + confetti at 25 %, 50 %, 75 % of the goal
   tour: boolean;           // slow close-up zooms over the finished picture
+  callToAction: boolean;   // big "scan to join" QR card after a minute without new photos
 };
 
 export const DEFAULT_DESIGN: Design = {
@@ -46,7 +47,7 @@ export const DEFAULT_DESIGN: Design = {
   mosaicGap: 0, mosaicFill: 100, pictureStrength: 50,
   speed: 1, arrival: 'loop', flyFrom: 'random', confetti: true,
   showTitle: true, tagline: '', showQr: true, showCounter: true, showCaptions: true,
-  spotlight: true, milestones: true, tour: true,
+  spotlight: true, milestones: true, tour: true, callToAction: true,
 };
 
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -87,5 +88,6 @@ export function normalizeDesign(input: unknown, legacy?: {fly_from?: string | nu
     spotlight: bool(i.spotlight, D.spotlight),
     milestones: bool(i.milestones, D.milestones),
     tour: bool(i.tour, D.tour),
+    callToAction: bool(i.callToAction, D.callToAction),
   };
 }

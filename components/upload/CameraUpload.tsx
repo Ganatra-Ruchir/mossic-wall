@@ -10,6 +10,29 @@ import {looksLikeImage, shrinkImage} from '@/lib/image-client';
 const FONT = '"Bricolage Grotesque Variable", ui-sans-serif, system-ui, sans-serif';
 const MAX_BATCH = 20;
 const NAME_KEY = 'mosaic_guest_name';
+// Photo looks: CSS filters for the preview, the same filter applied to the canvas before sending.
+const LOOKS = [
+  {id: 'original', label: 'Original', css: 'none'},
+  {id: 'vivid', label: 'Vivid', css: 'saturate(1.5) contrast(1.08)'},
+  {id: 'warm', label: 'Warm', css: 'sepia(0.3) saturate(1.35) hue-rotate(-8deg) brightness(1.04)'},
+  {id: 'mono', label: 'Mono', css: 'grayscale(1) contrast(1.15)'},
+] as const;
+type Look = (typeof LOOKS)[number]['id'];
+const canvasFilters = () => typeof document !== 'undefined' && 'filter' in (document.createElement('canvas').getContext('2d') ?? {});
+
+/** Re-encode the shot with the chosen look. */
+async function applyLook(blob: Blob, look: Look): Promise<Blob> {
+  const css = LOOKS.find((l) => l.id === look)?.css ?? 'none';
+  if (css === 'none' || !canvasFilters()) return blob;
+  const bmp = await createImageBitmap(blob);
+  const c = document.createElement('canvas');
+  c.width = bmp.width; c.height = bmp.height;
+  const x = c.getContext('2d')!;
+  x.filter = css;
+  x.drawImage(bmp, 0, 0);
+  bmp.close();
+  return new Promise((res) => c.toBlob((b) => res(b ?? blob), 'image/jpeg', 0.9));
+}
 
 type Result = 'approved' | 'pending' | 'waiting' | 'demo';
 type Item = {id: string; file: File; url: string; state: 'waiting' | 'sending' | 'done' | 'error'; error?: string; progress: number};
@@ -61,6 +84,10 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
   const [flash, setFlash] = useState(false);
+  const [timer, setTimer] = useState<0 | 3 | 10>(0);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const countRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [look, setLook] = useState<Look>('original');
   const [prog, setProg] = useState<{count: number; goal: number} | null>(null);
   const [mine, setMine] = useState<Mine[]>([]);
   const [showMine, setShowMine] = useState(false);
@@ -105,6 +132,20 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
     return () => { cancelled = true; stop(); };
   }, [facing, view.kind, stop]);
 
+  /** Shutter: straight away, or after a 3 / 10 s countdown (tap again to cancel). */
+  function press() {
+    if (countdown !== null) { if (countRef.current) clearInterval(countRef.current); countRef.current = null; setCountdown(null); return; }
+    if (!timer) { shoot(); return; }
+    let n = timer;
+    setCountdown(n);
+    countRef.current = setInterval(() => {
+      n -= 1;
+      if (n <= 0) { if (countRef.current) clearInterval(countRef.current); countRef.current = null; setCountdown(null); shoot(); }
+      else setCountdown(n);
+    }, 1000);
+  }
+  useEffect(() => () => { if (countRef.current) clearInterval(countRef.current); }, []);
+
   function shoot() {
     const v = videoRef.current;
     if (!v || !v.videoWidth) return;
@@ -117,7 +158,7 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
     ctx.drawImage(v, (v.videoWidth - side) / 2, (v.videoHeight - side) / 2, side, side, 0, 0, out, out);
     setFlash(true);
     setTimeout(() => setFlash(false), 140);
-    c.toBlob((b) => { if (b) { stop(); setError(''); setView({kind: 'shot', blob: b, url: URL.createObjectURL(b)}); } }, 'image/jpeg', 0.9);
+    c.toBlob((b) => { if (b) { stop(); setError(''); setLook('original'); setView({kind: 'shot', blob: b, url: URL.createObjectURL(b)}); } }, 'image/jpeg', 0.9);
   }
 
   // ——— gallery (several at once) ———
@@ -137,7 +178,8 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
   async function sendShot(v: Extract<View, {kind: 'shot'}>) {
     setBusy(true); setError(''); setProgress(0);
     try {
-      const r = await send(v.blob, eventId, name, message, setProgress);
+      const finalBlob = await applyLook(v.blob, look);
+      const r = await send(finalBlob, eventId, name, message, setProgress);
       remember(r);
       if (r.count !== undefined && r.goal) setProg({count: r.count, goal: r.goal});
       setMessage('');
@@ -216,6 +258,14 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
           )}
           <TopBar eventName={eventName} prog={prog} mineCount={mine.length} onMine={() => setShowMine(true)} />
           {camera !== 'denied' && camera !== 'unavailable' && (
+            <>
+            {countdown !== null && (
+              <motion.p key={countdown} initial={{scale: 1.6, opacity: 0}} animate={{scale: 1, opacity: 1}} className="pointer-events-none absolute inset-0 grid place-items-center text-[140px] font-[800] text-white" style={{textShadow: '0 6px 30px rgba(0,0,0,.6)'}}>{countdown}</motion.p>
+            )}
+            <button type="button" onClick={() => setTimer((t) => (t === 0 ? 3 : t === 3 ? 10 : 0))} aria-label="Selfie timer"
+              className="absolute bottom-[calc(max(28px,env(safe-area-inset-bottom))+104px)] left-1/2 -translate-x-1/2 rounded-full bg-black/45 px-4 py-1.5 text-[13px] font-[650] backdrop-blur">
+              ⏱ {timer ? `Timer ${timer}s` : 'Timer off'}
+            </button>
             <div className="absolute inset-x-0 bottom-0 flex items-center justify-between px-8 pb-[max(28px,env(safe-area-inset-bottom))] pt-6" style={{background: 'linear-gradient(transparent, rgba(0,0,0,.55))'}}>
               <button type="button" aria-label="Choose photos from your gallery" onClick={() => galleryRef.current?.click()}
                 className="grid h-14 w-14 place-items-center overflow-hidden rounded-2xl border-2 border-white/90 bg-white/15 backdrop-blur">
@@ -224,7 +274,7 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
                   <img src={lastThumb} alt="" className="h-full w-full object-cover" />
                 ) : <GalleryIcon />}
               </button>
-              <button type="button" aria-label="Take photo" onClick={shoot} disabled={camera !== 'on'}
+              <button type="button" aria-label={countdown !== null ? 'Cancel timer' : 'Take photo'} onClick={press} disabled={camera !== 'on'}
                 className="grid h-[84px] w-[84px] place-items-center rounded-full border-[5px] border-white disabled:opacity-40">
                 <span className="h-[64px] w-[64px] rounded-full bg-white transition active:scale-90" />
               </button>
@@ -233,6 +283,7 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
                 <FlipIcon />
               </button>
             </div>
+            </>
           )}
           {camera === 'starting' && <p className="absolute inset-x-0 top-1/2 text-center text-white/70">Starting camera…</p>}
           <AnimatePresence>{flash && <motion.div initial={{opacity: 0.9}} animate={{opacity: 0}} exit={{opacity: 0}} className="absolute inset-0 bg-white" />}</AnimatePresence>
@@ -245,8 +296,20 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
         <Sheet eventName={eventName}>
           <div className="mx-auto w-full max-w-[420px] overflow-hidden rounded-[22px] shadow-[0_18px_50px_rgba(0,0,0,.5)]">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={view.url} alt="Your photo" className="aspect-square w-full object-cover" />
+            <img src={view.url} alt="Your photo" className="aspect-square w-full object-cover" style={{filter: LOOKS.find((l) => l.id === look)?.css}} />
           </div>
+          {canvasFilters() && (
+            <div role="radiogroup" aria-label="Photo look" className="mt-4 grid grid-cols-4 gap-2">
+              {LOOKS.map((l) => (
+                <button key={l.id} type="button" role="radio" aria-checked={look === l.id} onClick={() => setLook(l.id)} disabled={busy}
+                  className={`overflow-hidden rounded-xl border-2 ${look === l.id ? 'border-white' : 'border-transparent opacity-80'}`}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={view.url} alt="" className="aspect-square w-full object-cover" style={{filter: l.css}} />
+                  <span className="block bg-black/40 py-1 text-[12px] font-[650]">{l.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <Fields name={name} setName={rememberName} message={message} setMessage={setMessage} disabled={busy} />
           {error && <p role="alert" className="mt-3 rounded-2xl bg-[#ff3d8b]/20 px-4 py-3 text-[14px] text-[#ffd1e3]">{error}</p>}
           <PrimaryButton onClick={() => sendShot(view)} busy={busy} progress={progress} label="Add to the mosaic" />
@@ -291,7 +354,7 @@ export default function CameraUpload({eventId, eventName, theme}: {eventId: stri
       )}
 
       {/* ——— Sent ——— */}
-      {view.kind === 'done' && <Done view={view} onAgain={backToCamera} />}
+      {view.kind === 'done' && <Done view={view} onAgain={backToCamera} eventId={eventId} eventName={eventName} />}
       {showMine && <MyPhotos mine={mine} onClose={() => setShowMine(false)} onRemoved={(id) => saveMine(mine.filter((m) => m.id !== id))} />}
     </main>
   );
@@ -361,7 +424,7 @@ function PrimaryButton({onClick, busy, label, progress, disabled}: {onClick: () 
   );
 }
 
-function Done({view, onAgain}: {view: Extract<View, {kind: 'done'}>; onAgain: () => void}) {
+function Done({view, onAgain, eventId, eventName}: {view: Extract<View, {kind: 'done'}>; onAgain: () => void; eventId: string; eventName?: string}) {
   const title = view.result === 'demo' ? 'Demo mode: not saved'
     : view.result === 'pending' ? (view.count > 1 ? `${view.count} photos sent!` : 'Photo sent!')
     : view.count > 1 ? `${view.count} photos are on the wall!` : 'You’re on the wall!';
@@ -380,6 +443,7 @@ function Done({view, onAgain}: {view: Extract<View, {kind: 'done'}>; onAgain: ()
       <motion.p initial={{opacity: 0}} animate={{opacity: 1}} transition={{delay: 0.45}} className="mt-3 max-w-xs text-[16px] text-white/80">{text}</motion.p>
       {view.number && view.goal && view.count === 1 ? <p className="mt-3 rounded-full bg-white/15 px-4 py-1.5 text-[14px] font-[650]">You’re photo #{view.number} of {view.goal}</p> : null}
       {view.spotId && <SpotlightButton id={view.spotId} />}
+      {eventId !== 'demo' && <InviteButton eventId={eventId} eventName={eventName} />}
       <button type="button" onClick={onAgain} className="mt-4 w-full max-w-xs rounded-full bg-white py-4 text-[17px] font-[750] text-[#2b0a4a]">{view.count > 1 ? 'Add more photos' : 'Take another photo'}</button>
     </div>
   );
@@ -462,5 +526,25 @@ function MyPhotos({mine, onClose, onRemoved}: {mine: Mine[]; onClose: () => void
         )}
       </div>
     </div>
+  );
+}
+
+/** Invite a friend: the phone's share sheet with the upload link, or copy it. */
+function InviteButton({eventId, eventName}: {eventId: string; eventName?: string}) {
+  const [copied, setCopied] = useState(false);
+  async function go() {
+    const url = `${window.location.origin}/upload?event=${eventId}`;
+    const data = {title: eventName || 'Digital Mosaic Wall', text: 'Add your photo to the big picture!', url};
+    try {
+      if (navigator.share) { await navigator.share(data); return; }
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
+    } catch { /* cancelled */ }
+  }
+  return (
+    <button type="button" onClick={go} className="mt-3 w-full max-w-xs rounded-full border border-white/40 py-3.5 text-[16px] font-[650]">
+      {copied ? 'Link copied!' : 'Invite a friend'}
+    </button>
   );
 }

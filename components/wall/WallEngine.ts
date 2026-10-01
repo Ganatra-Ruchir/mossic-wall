@@ -124,7 +124,7 @@ export class WallEngine {
   private tourNext = 0;
 
 
-  constructor(private canvas: HTMLCanvasElement, private goal: number, private cb: EngineCallbacks = {}, private speed = 1) {
+  constructor(private canvas: HTMLCanvasElement, private goal: number, private cb: EngineCallbacks = {}, private speed = 1, private opts: {dpr?: number} = {}) {
     this.ctx = canvas.getContext('2d')!;
     this.resize();
     this.raf = requestAnimationFrame(this.frame);
@@ -174,7 +174,7 @@ export class WallEngine {
 
   resize() {
     const r = this.canvas.getBoundingClientRect();
-    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.dpr = this.opts.dpr ?? Math.min(2, window.devicePixelRatio || 1);
     this.w = r.width;
     this.h = r.height;
     this.canvas.width = Math.round(r.width * this.dpr);
@@ -202,6 +202,10 @@ export class WallEngine {
   reveal() { if (this.phase === 'gallery' && this.tiles.length) this.startReveal(); }
 
   placedCount() { return this.tiles.filter((t) => t.placed).length; }
+  /** Columns × rows of the big-picture grid (0 before the reveal). */
+  gridSize() { return {...this.grid}; }
+  /** True when every placed photo and the target image have loaded (used by exports). */
+  isReady() { return !!this.target && this.tiles.every((t) => !t.placed || t.img); }
 
   // ——— tiles ———
 
@@ -748,6 +752,36 @@ export class WallEngine {
       this.moveCamera({z, fx, fy}, 2600 / this.speed);
       this.tourNext = now + (2600 + 4500) / this.speed;
     }
+  }
+
+  /** The finished picture as a high-resolution JPEG (null before the reveal). */
+  async exportImage(cellPx = 128, maxEdge = 8000): Promise<Blob | null> {
+    if (this.phase !== 'mosaic' || !this.grid.cols) return null;
+    const {cols, rows} = this.grid;
+    const scale = Math.max(8, Math.min(cellPx, Math.floor(maxEdge / Math.max(cols, rows)))); // stay under browser canvas limits
+    const c = document.createElement('canvas');
+    c.width = cols * scale;
+    c.height = rows * scale;
+    const x = c.getContext('2d');
+    if (!x) return null;
+    x.fillStyle = '#000';
+    x.fillRect(0, 0, c.width, c.height);
+    const inset = scale * (this.d.mosaicGap / 100) / 2;
+    // Big cells need the full-size photos, not the small wall thumbnails.
+    if (scale > 150) {
+      const need = [...new Set(this.cellOwner)].filter((o): o is Tile => !!o && !o.fullImg && !!o.fullUrl);
+      await Promise.all(need.map((o) => loadImage(o.fullUrl!).then((img) => { o.fullImg = img; }).catch(() => {})));
+    }
+    this.cellOwner.forEach((o, i) => {
+      const img = o?.fullImg || o?.img;
+      if (!img) return;
+      const iw = (img as HTMLImageElement).naturalWidth || (img as HTMLCanvasElement).width;
+      const ih = (img as HTMLImageElement).naturalHeight || (img as HTMLCanvasElement).height;
+      const side = Math.min(iw, ih);
+      x.drawImage(img, (iw - side) / 2, (ih - side) / 2, side, side, (i % cols) * scale + inset, Math.floor(i / cols) * scale + inset, scale - inset * 2, scale - inset * 2);
+    });
+    if (this.target) { x.globalAlpha = this.d.pictureStrength / 100; x.drawImage(this.target, 0, 0, c.width, c.height); x.globalAlpha = 1; }
+    return new Promise((res) => c.toBlob(res, 'image/jpeg', 0.92));
   }
 
   /** Milestone celebration: confetti bursts across the screen. */

@@ -23,6 +23,9 @@ export default function LiveMosaic({eventId, initial, demo = false, preview = fa
   const [phase, setPhase] = useState<'gallery' | 'revealing' | 'mosaic'>('gallery');
   const [flying, setFlying] = useState<WallPhoto | null>(null);
   const [spot, setSpot] = useState<WallPhoto | null>(null);
+  const [cta, setCta] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const lastArrival = useRef(Date.now());
   const [milestone, setMilestone] = useState<{key: number; title: string; text: string} | null>(null);
   const [qr, setQr] = useState('');
   const [clean, setClean] = useState(false); // fullscreen: only the mosaic
@@ -78,6 +81,42 @@ export default function LiveMosaic({eventId, initial, demo = false, preview = fa
     seenSpot.current = at;
     engineRef.current?.spotlight(id);
   }, [event?.spotlight_at, event?.spotlight_id]);
+
+  // "Join us" reminder: after a minute without new photos, a big QR card for 8 s (then again a minute later).
+  useEffect(() => { lastArrival.current = Date.now(); setCta(false); }, [count]);
+  useEffect(() => {
+    if (!design.callToAction || phase !== 'gallery' || clean) { setCta(false); return; }
+    const iv = setInterval(() => {
+      if (Date.now() - lastArrival.current > 60000) {
+        setCta(true);
+        lastArrival.current = Date.now(); // next reminder a minute later
+        setTimeout(() => setCta(false), 8000);
+      }
+    }, 2000);
+    return () => clearInterval(iv);
+  }, [design.callToAction, phase, clean]);
+
+  // Save the finished picture as a high-resolution image (button after the reveal, or the S key).
+  const savePicture = useCallback(async () => {
+    const e = engineRef.current;
+    if (!e || saving) return;
+    setSaving(true);
+    try {
+      const g = e.gridSize();
+      const blob = await e.exportImage(Math.max(128, Math.ceil(3840 / Math.max(1, g.cols))));
+      if (!blob) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(title || 'mosaic').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'mosaic'}-picture.jpg`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } finally { setSaving(false); }
+  }, [saving, title]);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => { if ((e.key === 's' || e.key === 'S') && !(e.target instanceof HTMLInputElement) && !e.metaKey && !e.ctrlKey) savePicture(); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [savePicture]);
 
   // Milestones: banner + confetti when the wall passes 25 %, 50 % and 75 % of the goal (not on page load).
   const lastCount = useRef<number | null>(null);
@@ -239,6 +278,23 @@ export default function LiveMosaic({eventId, initial, demo = false, preview = fa
         )}
       </AnimatePresence>
 
+      {/* "Join us" reminder when the wall has been quiet for a minute. */}
+      <AnimatePresence>
+        {cta && qr && !clean && !spot && (
+          <motion.div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/35" initial={{opacity: 0}} animate={{opacity: 1}} exit={{opacity: 0}}>
+            <motion.div initial={{scale: 0.85, y: 20}} animate={{scale: 1, y: 0}} exit={{scale: 0.95}} transition={{type: 'spring', stiffness: 180, damping: 16}}
+              className="flex items-center gap-[4vh] rounded-[4vh] bg-white p-[3.5vh] pr-[6vh] text-[#2b0a4a] shadow-[0_3vh_8vh_rgba(0,0,0,.5)]">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={qr} alt="QR code to add your photo" className="h-[32vh] w-[32vh]" />
+              <div className="max-w-[34vw]">
+                <p className="text-[6.5vh] font-[800] leading-[1.02] tracking-[-0.02em]">Be part of the picture</p>
+                <p className="mt-[2vh] text-[3vh] font-[550] text-[#2b0a4a]/80">Scan with your phone camera and add your photo. {left > 0 ? `${left} more until the big reveal!` : ''}</p>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Milestone banner. */}
       <AnimatePresence>
         {milestone && !clean && (
@@ -262,6 +318,12 @@ export default function LiveMosaic({eventId, initial, demo = false, preview = fa
       {demo && !clean && !preview && <DemoControls engine={engineRef} />}
       {preview && <PreviewFeeder engine={engineRef} />}
 
+      {done && !preview && (
+        <button type="button" onClick={savePicture} disabled={saving}
+          className={`absolute bottom-[3vh] right-[3vw] z-10 flex items-center gap-2 rounded-full bg-black/45 px-4 py-2.5 text-[15px] font-[600] text-white backdrop-blur transition-opacity duration-300 ${idle ? 'pointer-events-none opacity-0' : 'opacity-100'} ${clean ? 'mr-[16vw]' : 'mb-[9vh] mr-[16vw]'}`}>
+          {saving ? 'Saving…' : 'Save picture (S)'}
+        </button>
+      )}
       {!preview && <button type="button" onClick={() => toggleRef.current()} aria-label={clean ? 'Exit fullscreen' : 'Fullscreen'}
         className={`absolute bottom-[3vh] right-[3vw] z-10 flex items-center gap-2 rounded-full bg-black/45 px-4 py-2.5 text-[15px] font-[600] text-white backdrop-blur transition-opacity duration-300 ${idle ? 'pointer-events-none opacity-0' : 'opacity-100'} ${clean ? '' : 'mb-[9vh]'}`}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>

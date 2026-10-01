@@ -89,6 +89,8 @@ alter table events add column if not exists spotlight_id uuid;
 alter table events add column if not exists spotlight_at timestamptz;
 -- Lets the phone that uploaded a photo remove it again (only a hash is stored).
 alter table submissions add column if not exists delete_token_hash text;
+-- The finished picture the admin shared with guests (shown on the guest page after the event).
+alter table events add column if not exists final_image_url text;
 
 -- Approving: take a random free tile if there is one, otherwise stay approved and wait (tile_index null).
 create or replace function approve_submission(p_id uuid) returns submissions language plpgsql as $$
