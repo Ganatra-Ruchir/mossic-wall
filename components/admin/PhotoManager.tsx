@@ -32,29 +32,39 @@ export default function PhotoManager({eventId, counts, onChanged, flash}: {event
   const [open, setOpen] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const shown = useRef(60);
+  const loadRequest = useRef(0);
+  const loadingRef = useRef(false);
 
   useEffect(() => { const t = setTimeout(() => setDebounced(query.trim()), 250); return () => clearTimeout(t); }, [query]);
 
   const load = useCallback(async (keepCount = true) => {
+    const request = ++loadRequest.current;
     const limit = keepCount ? shown.current : 60;
+    loadingRef.current = true;
     setLoading(true);
     try {
-      // Fetch the pages currently shown so live refresh doesn't shrink the list.
       const pages = Math.max(1, Math.ceil(limit / 60));
-      let rows: Submission[] = [], t = 0, more = false;
-      for (let p = 0; p < pages; p++) {
-        const j = await call<{submissions: Submission[]; total: number; hasMore: boolean}>(`/api/admin/events/${eventId}/submissions?status=${status}&offset=${p * 60}${debounced ? `&q=${encodeURIComponent(debounced)}` : ''}`);
-        rows = rows.concat(j.submissions); t = j.total; more = j.hasMore;
-        if (!j.hasMore) break;
-      }
+      const results = await Promise.all(Array.from({length: pages}, (_, p) =>
+        call<{submissions: Submission[]; total: number; hasMore: boolean}>(`/api/admin/events/${eventId}/submissions?status=${status}&offset=${p * 60}${debounced ? `&q=${encodeURIComponent(debounced)}` : ''}`),
+      ));
+      if (request !== loadRequest.current) return;
+      const rows = results.flatMap((j) => j.submissions);
+      const last = results[results.length - 1];
+      const t = last?.total ?? 0;
+      const more = last?.hasMore ?? false;
       setList(rows); setTotal(t); setHasMore(more);
       shown.current = Math.max(60, rows.length);
-    } catch (e) { flash((e as Error).message, true); }
-    finally { setLoading(false); }
+    } catch (e) { if (request === loadRequest.current) flash((e as Error).message, true); }
+    finally {
+      if (request === loadRequest.current) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
+    }
   }, [eventId, status, debounced, flash]);
 
   useEffect(() => { shown.current = 60; setSelected(new Set()); setOpen(null); load(false); }, [status, debounced]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { const iv = setInterval(() => { if (!busy && open === null) load(); }, 6000); return () => clearInterval(iv); }, [load, busy, open]);
+  useEffect(() => { const iv = setInterval(() => { if (!busy && open === null && !loadingRef.current) load(); }, 6000); return () => clearInterval(iv); }, [load, busy, open]);
 
   async function apply(op: Op, ids: string[], ask = true) {
     if (!ids.length) return;

@@ -19,6 +19,8 @@ export default function LiveMosaic({eventId, initial, demo = false, preview = fa
   const engineRef = useRef<WallEngine | null>(null);
   const placeRef = useRef<() => void>(() => {});
   const [data, setData] = useState<WallData | undefined>(initial);
+  const wallSignature = useRef(initial ? JSON.stringify(initial) : '');
+  const refreshing = useRef(false);
   const [count, setCount] = useState(0);
   const [phase, setPhase] = useState<'gallery' | 'revealing' | 'mosaic'>('gallery');
   const [flying, setFlying] = useState<WallPhoto | null>(null);
@@ -199,10 +201,20 @@ export default function LiveMosaic({eventId, initial, demo = false, preview = fa
   // Live updates: check for new photos every 3 s.
   const toggleRef = useRef<() => void>(() => {});
   const refresh = useCallback(async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
     try {
       const r = await fetch(`/api/wall/${eventId}`, {cache: 'no-store'});
-      if (r.ok) setData(await r.json());
+      if (r.ok) {
+        const next = await r.json() as WallData;
+        const signature = JSON.stringify(next);
+        if (signature !== wallSignature.current) {
+          wallSignature.current = signature;
+          setData(next);
+        }
+      }
     } catch { /* keep showing what we have; next poll retries */ }
+    finally { refreshing.current = false; }
   }, [eventId]);
   useEffect(() => {
     if (demo) return;

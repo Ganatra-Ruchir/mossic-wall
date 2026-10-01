@@ -16,10 +16,10 @@ return NextResponse.json({submissions:rows,total,hasMore:offset+rows.length<tota
 
 // Bulk actions: approve_all | {action:'bulk', op, ids} | {action:'clear_all', confirm:<event name>}
 export async function POST(req:Request,{params}:Ctx){const g=await adminGuard();if(g)return g;try{const {id}=await params;if(!UUID.test(id))return fail('Event not found',404);const b=await req.json();
-if(b.action==='approve_all'){const rows=await q<{id:string}>("select id from submissions where event_id=$1 and status='pending' order by created_at limit 500",[id]);for(const s of rows)await q('select approve_submission($1)',[s.id]);return NextResponse.json({ok:true,approved:rows.length})}
+if(b.action==='approve_all'){const rows=await q<{id:string}>("select id, approve_submission(id) as result from (select id from submissions where event_id=$1 and status='pending' order by created_at limit 500) pending",[id]);return NextResponse.json({ok:true,approved:rows.length})}
 if(b.action==='bulk'){const ids=Array.isArray(b.ids)?b.ids.filter((x:unknown)=>typeof x==='string'&&UUID.test(x)).slice(0,500):[];const fn={approve:'approve_submission',reject:'reject_submission',delete:'delete_submission'}[b.op as string];if(!fn)return fail('Unknown operation',400);if(!ids.length)return fail('No photos selected',400);
 // Only photos of this event.
-const own=await q<{id:string}>('select id from submissions where event_id=$1 and id = any($2::uuid[])',[id,ids]);for(const s of own)await q(`select ${fn}($1)`,[s.id]);return NextResponse.json({ok:true,done:own.length})}
+const own=await q<{id:string}>(`select s.id, ${fn}(s.id) as result from submissions s where s.event_id=$1 and s.id = any($2::uuid[])`,[id,ids]);return NextResponse.json({ok:true,done:own.length})}
 if(b.action==='clear_all'){const ev=await one<{name:string}>('select name from events where id=$1',[id]);if(!ev)return fail('Event not found',404);if(String(b.confirm||'').trim()!==ev.name)return fail('Type the event name exactly to confirm',400);
 const r=await one<{n:number}>('select clear_event_photos($1) n',[id]);return NextResponse.json({ok:true,deleted:r?.n??0})}
 return fail('Unknown action',400)}catch(e){return fail(e)}}
