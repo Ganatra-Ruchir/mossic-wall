@@ -7,6 +7,8 @@
 //  • mosaic: once `goal` photos are in, every tile flies to the cell of the target
 //    image whose colour it matches best, and the target picture appears.
 
+export type FlySide = 'random' | 'left' | 'right' | 'top' | 'bottom';
+
 export type WallPhoto = {id: string; thumb: string; full?: string; name?: string | null; message?: string | null};
 
 type RGB = [number, number, number];
@@ -17,6 +19,8 @@ type Tile = {
   id: string;
   img: CanvasImageSource | null;
   fullImg: CanvasImageSource | null;
+  fullUrl?: string;
+  fullLoading?: boolean;
   color: RGB | null;
   pos: Rect & {r: number};
   tween: Tween | null;
@@ -105,6 +109,7 @@ export class WallEngine {
   private dirty = true;
   private destroyed = false;
   private area = {x: 0, y: 0, w: 0, h: 0};
+  private flyFrom: FlySide = 'random';
 
   constructor(private canvas: HTMLCanvasElement, private goal: number, private cb: EngineCallbacks = {}, private speed = 1) {
     this.ctx = canvas.getContext('2d')!;
@@ -122,6 +127,8 @@ export class WallEngine {
     if (this.phase === 'gallery' && this.placedCount() >= this.goal) this.startReveal();
   }
   setSpeed(s: number) { this.speed = clamp(s, 0.25, 4); }
+  /** Which screen edge new photos fly in from. */
+  setFlyFrom(side: string) { this.flyFrom = (['left', 'right', 'top', 'bottom'].includes(side) ? side : 'random') as FlySide; }
 
   async setTarget(url: string) {
     if (url === this.targetUrl) return;
@@ -179,19 +186,24 @@ export class WallEngine {
   private newTile(p: WallPhoto): Tile {
     const t: Tile = {id: p.id, img: null, fullImg: null, color: null, pos: {x: this.w / 2, y: this.h / 2, s: 0, r: 0}, tween: null, alpha: 1, pop: 0, placed: false, cell: -1};
     loadImage(p.thumb).then((img) => { t.img = img; t.color = averageColor(img); this.dirty = true; if (this.phase === 'mosaic') this.assignLate(t); }).catch(() => {});
-    if (p.full) this.upgradeLater(t, p.full);
+    t.fullUrl = p.full;
     return t;
   }
 
-  private upgradeLater(t: Tile, url: string) {
-    // Sharp images while tiles are big; thumbnails are enough once the wall is dense.
-    const want = () => this.tileSize() * this.dpr > 230 || this.flights.some((f) => f.tile === t);
-    const check = () => {
-      if (this.destroyed || t.fullImg) return;
-      if (want()) loadImage(url).then((img) => { t.fullImg = img; this.dirty = true; }).catch(() => {});
-      else setTimeout(check, 4000);
-    };
-    check();
+  /** One shared check (not a timer per photo): sharp images while tiles are big, max 6 loading at once. */
+  private lastUpgrade = 0;
+  private upgrade(now: number) {
+    if (now - this.lastUpgrade < 1500) return;
+    this.lastUpgrade = now;
+    if (this.tileSize() * this.dpr <= 230) return;
+    let loading = this.tiles.filter((t) => t.fullLoading).length;
+    for (const t of this.tiles) {
+      if (loading >= 6) break;
+      if (t.fullImg || t.fullLoading || !t.fullUrl) continue;
+      t.fullLoading = true;
+      loading++;
+      loadImage(t.fullUrl).then((img) => { t.fullImg = img; this.dirty = true; }).catch(() => {}).finally(() => { t.fullLoading = false; if (!t.fullImg) t.fullUrl = undefined; });
+    }
   }
 
   private addInstant(p: WallPhoto) {
@@ -311,7 +323,8 @@ export class WallEngine {
     const tile = this.newTile(photo);
     const dur = (backlog > 10 ? 1900 : backlog > 3 ? 2600 : 3300) / this.speed;
     // Start just off a random edge, loop over the wall twice, then home in.
-    const edge = Math.floor(Math.random() * 4);
+    const sides: FlySide[] = ['left', 'right', 'top', 'bottom'];
+    const edge = this.flyFrom === 'random' ? Math.floor(Math.random() * 4) : sides.indexOf(this.flyFrom);
     const rx = Math.random(), ry = Math.random();
     const start = edge === 0 ? {x: -120, y: this.h * (0.2 + ry * 0.6)} : edge === 1 ? {x: this.w + 120, y: this.h * (0.2 + ry * 0.6)}
       : edge === 2 ? {x: this.w * (0.15 + rx * 0.7), y: -140} : {x: this.w * (0.15 + rx * 0.7), y: this.h + 140};
@@ -521,6 +534,7 @@ export class WallEngine {
     this.raf = requestAnimationFrame(this.frame);
     if (this.revealAt && now >= this.revealAt) this.startReveal();
     this.launch(now);
+    this.upgrade(now);
     const active = this.flights.length || this.particles.length || this.tiles.some((t) => t.tween || now - t.pop < 500) || Math.abs(this.overlay - this.overlayGoal) > 0.002;
     if (!active && !this.dirty) return;
     this.dirty = false;

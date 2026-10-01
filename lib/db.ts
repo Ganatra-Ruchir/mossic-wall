@@ -79,6 +79,8 @@ create table if not exists app_settings(key text primary key, value text not nul
 
 -- Photos needed before the wall turns into the big picture.
 alter table events add column if not exists goal integer not null default 150;
+-- Screen edge new photos fly in from on the wall: random | left | right | top | bottom.
+alter table events add column if not exists fly_from text not null default 'random';
 
 -- Approving: take a random free tile if there is one, otherwise stay approved and wait (tile_index null).
 create or replace function approve_submission(p_id uuid) returns submissions language plpgsql as $$
