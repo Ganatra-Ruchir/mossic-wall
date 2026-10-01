@@ -81,6 +81,9 @@ create table if not exists app_settings(key text primary key, value text not nul
 alter table events add column if not exists goal integer not null default 150;
 -- Screen edge new photos fly in from on the wall: random | left | right | top | bottom.
 alter table events add column if not exists fly_from text not null default 'random';
+-- Wall design (Admin → Design) and a counter the admin bumps to play the reveal on every open wall.
+alter table events add column if not exists design jsonb not null default '{}'::jsonb;
+alter table events add column if not exists reveal_token integer not null default 0;
 
 -- Approving: take a random free tile if there is one, otherwise stay approved and wait (tile_index null).
 create or replace function approve_submission(p_id uuid) returns submissions language plpgsql as $$

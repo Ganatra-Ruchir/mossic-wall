@@ -110,6 +110,9 @@ export class WallEngine {
   private destroyed = false;
   private area = {x: 0, y: 0, w: 0, h: 0};
   private flyFrom: FlySide = 'random';
+  // Look & motion (Admin → Design). Percentages are of the tile size.
+  private d = {frame: true, frameColor: '#ffffff', frameWidth: 4, corner: 6, shadow: true, tilt: false, photoSize: 100, gap: 9,
+    mosaicGap: 0, mosaicFill: 100, pictureStrength: 50, arrival: 'loop' as 'loop' | 'direct' | 'pop', confetti: true};
 
   constructor(private canvas: HTMLCanvasElement, private goal: number, private cb: EngineCallbacks = {}, private speed = 1) {
     this.ctx = canvas.getContext('2d')!;
@@ -127,6 +130,15 @@ export class WallEngine {
     if (this.phase === 'gallery' && this.placedCount() >= this.goal) this.startReveal();
   }
   setSpeed(s: number) { this.speed = clamp(s, 0.25, 4); }
+  setDesign(x: Partial<WallEngine['d']> & {speed?: number; flyFrom?: string}) {
+    const {speed, flyFrom, ...rest} = x;
+    Object.assign(this.d, rest);
+    if (speed !== undefined) this.setSpeed(speed);
+    if (flyFrom !== undefined) this.setFlyFrom(flyFrom);
+    if (this.phase === 'mosaic') this.overlayGoal = this.d.pictureStrength / 100;
+    this.relayout(true);
+    this.dirty = true;
+  }
   /** Which screen edge new photos fly in from. */
   setFlyFrom(side: string) { this.flyFrom = (['left', 'right', 'top', 'bottom'].includes(side) ? side : 'random') as FlySide; }
 
@@ -246,7 +258,8 @@ export class WallEngine {
       if (s > best.s) best = {cols: c, rows: r, s};
     }
     const cap = Math.min(h / 2.3, w / 4.2); // ~10 photos → comfortable "print" size
-    best.s = Math.min(best.s, cap);
+    const k = this.d.photoSize / 100;      // bigger: raises the cap; smaller: shrinks every photo
+    best.s = Math.min(best.s, cap * k) * Math.min(1, k);
     return best;
   }
 
@@ -268,7 +281,7 @@ export class WallEngine {
 
   private cellRect(i: number): Rect {
     const {cols, rows} = this.grid;
-    const s = Math.min(this.area.w / cols, this.area.h / rows);
+    const s = Math.min(this.area.w / cols, this.area.h / rows) * (this.d.mosaicFill / 100);
     const x0 = this.area.x + (this.area.w - cols * s) / 2;
     const y0 = this.area.y + (this.area.h - rows * s) / 2;
     return {x: x0 + (i % cols) * s + s / 2, y: y0 + Math.floor(i / cols) * s + s / 2, s};
@@ -320,6 +333,7 @@ export class WallEngine {
     if (now - this.lastLaunch < gap || this.flights.length >= 5) return;
     this.lastLaunch = now;
     const photo = this.queue.shift()!;
+    if (this.d.arrival === 'pop') { this.popIn(photo, now); return; }
     const tile = this.newTile(photo);
     const dur = (backlog > 10 ? 1900 : backlog > 3 ? 2600 : 3300) / this.speed;
     // Start just off a random edge, loop over the wall twice, then home in.
@@ -332,12 +346,32 @@ export class WallEngine {
     const w1 = {x: a.x + a.w * (0.2 + Math.random() * 0.6), y: a.y + a.h * (0.15 + Math.random() * 0.3)};
     const w2 = {x: a.x + a.w * (0.2 + Math.random() * 0.6), y: a.y + a.h * (0.55 + Math.random() * 0.3)};
     const s0 = Math.min(this.h * 0.3, 340);
-    const f: Flight = {tile, t0: now, dur, pts: [start, w1, w2, {x: 0, y: 0}], s0, photo};
+    const direct = this.d.arrival === 'direct';
+    const f: Flight = {tile, t0: now, dur: direct ? dur * 0.6 : dur, pts: direct ? [start, {x: 0, y: 0}] : [start, w1, w2, {x: 0, y: 0}], s0, photo};
     this.flights.push(f);
     this.byId.set(tile.id, tile);
     if (photo.full) loadImage(photo.full).then((img) => { tile.fullImg = img; }).catch(() => {});
     this.relayout(true); // others make room now
     if (this.flights.length === 1) this.cb.onFlight?.(photo);
+  }
+
+  /** "Pop in place": the photo appears straight in its spot with a bounce. */
+  private popIn(photo: WallPhoto, now: number) {
+    const t = this.newTile(photo);
+    if (photo.full) loadImage(photo.full).then((img) => { t.fullImg = img; }).catch(() => {});
+    t.placed = true;
+    t.pop = now;
+    this.tiles.push(t);
+    this.byId.set(t.id, t);
+    if (this.phase === 'mosaic') { this.chooseCellFor(t); if (t.cell >= 0) this.cellOwner[t.cell] = t; }
+    const to = this.phase === 'gallery' ? this.slotFor(this.placedCount() - 1, this.placedCount() + this.flights.length) : this.cellRect(Math.max(0, t.cell));
+    t.pos = {...to, r: 0};
+    this.relayout(true);
+    this.burst(to.x, to.y, to.s, 22);
+    this.cb.onFlight?.(photo);
+    setTimeout(() => { if (!this.destroyed) this.cb.onFlight?.(this.flights[0]?.photo ?? null); }, 3000);
+    this.cb.onCount?.(this.placedCount());
+    if (this.phase === 'gallery' && this.placedCount() >= this.goal && !this.flights.length) this.scheduleReveal(1300);
   }
 
   private flightTarget(f: Flight): Rect {
@@ -371,6 +405,7 @@ export class WallEngine {
   }
 
   private burst(x: number, y: number, s: number, n: number) {
+    if (!this.d.confetti) return;
     const now = performance.now();
     for (let i = 0; i < n; i++) {
       const a = (Math.PI * 2 * i) / n + Math.random() * 0.4;
@@ -520,7 +555,7 @@ export class WallEngine {
     setTimeout(() => {
       if (this.destroyed) return;
       this.phase = 'mosaic';
-      this.overlayGoal = 0.5;
+      this.overlayGoal = this.d.pictureStrength / 100;
       const b = this.mosaicBounds();
       for (let i = 0; i < 6; i++) setTimeout(() => this.burst(b.x + Math.random() * b.w, b.y + Math.random() * b.h, 160, 40), i * 180);
       this.cb.onPhase?.('mosaic');
@@ -569,7 +604,7 @@ export class WallEngine {
         const p = this.current(t, now);
         const popT = (now - t.pop) / 500;
         const bounce = popT >= 0 && popT < 1 ? 1 + Math.sin(popT * Math.PI) * 0.14 * (1 - popT) : 1;
-        this.drawImageCell(t, p.x, p.y, p.s * bounce, p.r, t.alpha, mosaic || this.phase === 'revealing');
+        this.drawImageCell(t, p.x, p.y, p.s * bounce, p.r + (this.d.tilt && !mosaic ? this.tiltOf(t.id) : 0), t.alpha, mosaic || this.phase === 'revealing');
       }
     }
 
@@ -623,32 +658,43 @@ export class WallEngine {
     c.globalAlpha = alpha;
     c.translate(x, y);
     if (rot) c.rotate(rot);
-    const h = s / 2;
     if (plain) {
-      if (img) this.cover(img, -h, -h, s, s);
-      else { c.fillStyle = 'rgba(255,255,255,.12)'; c.fillRect(-h, -h, s, s); }
+      const m = s * (1 - this.d.mosaicGap / 100); // space between tiles in the final picture
+      const h = m / 2;
+      if (img) this.cover(img, -h, -h, m, m);
+      else { c.fillStyle = 'rgba(255,255,255,.12)'; c.fillRect(-h, -h, m, m); }
       c.restore();
       return;
     }
-    const gap = Math.max(2, s * 0.045);
-    const frame = Math.max(2, s * 0.035);
-    const rr = Math.max(3, s * 0.06);
-    const outer = s - gap * 2;
-    c.shadowColor = lifted ? 'rgba(20,0,40,.55)' : 'rgba(20,0,40,.35)';
-    c.shadowBlur = lifted ? 30 : Math.min(18, s * 0.08);
-    c.shadowOffsetY = lifted ? 14 : Math.min(6, s * 0.03);
-    c.fillStyle = '#ffffff';
+    const d = this.d;
+    const gap = (s * d.gap) / 200;
+    const frame = d.frame ? (s * d.frameWidth) / 100 : 0;
+    const outer = Math.max(1, s - gap * 2);
+    const rr = Math.min(outer / 2, (outer * d.corner) / 100);
+    if (d.shadow || lifted) {
+      c.shadowColor = lifted ? 'rgba(20,0,40,.55)' : 'rgba(20,0,40,.35)';
+      c.shadowBlur = lifted ? 30 : Math.min(18, s * 0.08);
+      c.shadowOffsetY = lifted ? 14 : Math.min(6, s * 0.03);
+    }
+    c.fillStyle = d.frame ? d.frameColor : '#000000';
     c.beginPath();
     c.roundRect(-outer / 2, -outer / 2, outer, outer, rr);
     c.fill();
     c.shadowColor = 'transparent';
     const inner = outer - frame * 2;
     c.beginPath();
-    c.roundRect(-inner / 2, -inner / 2, inner, inner, Math.max(2, rr - frame));
+    c.roundRect(-inner / 2, -inner / 2, inner, inner, Math.max(0, rr - frame));
     c.clip();
     if (img) this.cover(img, -inner / 2, -inner / 2, inner, inner);
     else { c.fillStyle = '#e9e3f5'; c.fillRect(-inner / 2, -inner / 2, inner, inner); }
     c.restore();
+  }
+
+  /** A stable small angle per photo (±4°) for the "pinned prints" look. */
+  private tiltOf(id: string) {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+    return (((h >>> 0) % 1000) / 1000 - 0.5) * 0.14;
   }
 
   private cover(img: CanvasImageSource, x: number, y: number, w: number, h: number) {

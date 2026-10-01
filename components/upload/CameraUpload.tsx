@@ -43,7 +43,7 @@ function send(blob: Blob, eventId: string, name: string, message: string, onProg
   });
 }
 
-export default function CameraUpload({eventId, eventName}: {eventId: string; eventName?: string}) {
+export default function CameraUpload({eventId, eventName, theme}: {eventId: string; eventName?: string; theme?: {background: string; accent: string}}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
@@ -166,7 +166,7 @@ export default function CameraUpload({eventId, eventName}: {eventId: string; eve
   const lastThumb = items[0]?.url;
 
   return (
-    <main className="fixed inset-0 select-none overflow-hidden bg-black text-white" style={{fontFamily: FONT}}>
+    <main className="fixed inset-0 select-none overflow-hidden bg-black text-white" style={{fontFamily: FONT, ['--bg' as string]: theme?.background ?? '#1d0633', ['--accent' as string]: theme?.accent ?? '#ff3d8b'}}>
       <input ref={galleryRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => { picked(e.target.files); e.target.value = ''; }} />
       <input ref={nativeCamRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { picked(e.target.files); e.target.value = ''; }} />
 
@@ -176,7 +176,7 @@ export default function CameraUpload({eventId, eventName}: {eventId: string; eve
           <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 h-full w-full object-cover" style={{transform: facing === 'user' ? 'scaleX(-1)' : undefined}} />
           {camera === 'on' && <SquareGuide />}
           {(camera === 'denied' || camera === 'unavailable') && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1d0633] px-8 text-center">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-[var(--bg)] px-8 text-center">
               <h2 className="text-[28px] font-[750] leading-tight">{camera === 'denied' ? 'Camera access is off' : 'Camera isn’t available here'}</h2>
               <p className="mt-3 max-w-xs text-[15px] text-white/75">
                 {camera === 'denied' ? 'Allow camera access for this site in your browser settings, or use the buttons below.' : 'You can still take a photo with your phone’s camera or pick some from your gallery.'}
@@ -285,7 +285,7 @@ function SquareGuide() {
 
 function Sheet({children, eventName}: {children: React.ReactNode; eventName?: string}) {
   return (
-    <div className="absolute inset-0 overflow-y-auto" style={{background: 'radial-gradient(120% 70% at 0% 0%, #8a0fc2 0%, transparent 60%), radial-gradient(90% 60% at 100% 100%, #ff3d8b 0%, transparent 60%), #1d0633'}}>
+    <div className="absolute inset-0 overflow-y-auto" style={{background: 'radial-gradient(120% 70% at 0% 0%, #8a0fc2 0%, transparent 60%), radial-gradient(90% 60% at 100% 100%, var(--accent) 0%, transparent 60%), var(--bg)'}}>
       <div className="mx-auto flex min-h-full w-full max-w-md flex-col px-5 pb-[max(24px,env(safe-area-inset-bottom))] pt-[max(20px,env(safe-area-inset-top))]">
         <p className="mb-4 text-[15px] font-[650] text-white/80">{eventName || 'Digital Mosaic Wall'}</p>
         {children}
@@ -307,8 +307,8 @@ function Fields({name, setName, message, setMessage, disabled}: {name: string; s
 function PrimaryButton({onClick, busy, label, progress, disabled}: {onClick: () => void; busy: boolean; label: string; progress: number; disabled?: boolean}) {
   return (
     <button type="button" onClick={onClick} disabled={busy || disabled}
-      className="relative mt-5 w-full overflow-hidden rounded-full py-4 text-[17px] font-[750] text-white shadow-[0_10px_30px_rgba(255,61,139,.35)] disabled:opacity-70"
-      style={{background: 'linear-gradient(90deg,#8a2be2,#ff3d8b)'}}>
+      className="relative mt-5 w-full overflow-hidden rounded-full py-4 text-[17px] font-[750] text-white shadow-[0_10px_30px_rgba(0,0,0,.35)] disabled:opacity-70"
+      style={{background: 'linear-gradient(90deg,#8a2be2,var(--accent))'}}>
       {busy && <span className="absolute inset-y-0 left-0 bg-white/25 transition-[width]" style={{width: `${Math.round(progress * 100)}%`}} />}
       <span className="relative">{busy ? 'Sending…' : label}</span>
     </button>
@@ -324,7 +324,7 @@ function Done({view, onAgain}: {view: Extract<View, {kind: 'done'}>; onAgain: ()
     : view.result === 'demo' ? 'This site isn’t connected to a database yet.'
     : view.count > 1 ? 'Look at the big screen: your photos are flying into the mosaic.' : 'Look at the big screen: your photo is flying into the mosaic.';
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center px-8 text-center" style={{background: 'radial-gradient(100% 60% at 50% 30%, #8a0fc2 0%, #1d0633 70%)'}}>
+    <div className="absolute inset-0 flex flex-col items-center justify-center px-8 text-center" style={{background: 'radial-gradient(100% 60% at 50% 30%, #8a0fc2 0%, var(--bg) 70%)'}}>
       <motion.div initial={{scale: 0.3, rotate: -12, opacity: 0}} animate={{scale: 1, rotate: -4, opacity: 1}} transition={{type: 'spring', stiffness: 180, damping: 14}}
         className="h-40 w-40 overflow-hidden rounded-[22px] border-[6px] border-white shadow-[0_20px_50px_rgba(0,0,0,.45)]">
         {/* eslint-disable-next-line @next/next/no-img-element */}

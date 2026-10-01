@@ -3,15 +3,16 @@ import '@fontsource-variable/bricolage-grotesque';
 import {AnimatePresence, motion} from 'framer-motion';
 import QRCode from 'qrcode';
 import {useCallback, useEffect, useRef, useState} from 'react';
+import {normalizeDesign, type Design} from '@/lib/design';
 import type {WallData} from '@/lib/types';
 import {WallEngine, type WallPhoto} from './WallEngine';
 
 const DEFAULT_TARGET = '/targets/micron.jpg';
 const FONT = '"Bricolage Grotesque Variable", ui-sans-serif, system-ui, sans-serif';
 
-type Props = {eventId: string; initial?: WallData; demo?: boolean};
+type Props = {eventId: string; initial?: WallData; demo?: boolean; preview?: boolean};
 
-export default function LiveMosaic({eventId, initial, demo = false}: Props) {
+export default function LiveMosaic({eventId, initial, demo = false, preview = false}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
@@ -27,7 +28,11 @@ export default function LiveMosaic({eventId, initial, demo = false}: Props) {
   const cleanRef = useRef(false);
   const event = data?.event;
   const goal = Math.max(2, Math.min(event?.goal ?? 150, event?.total_slots ?? 150));
-  const title = demo ? 'Micron' : event?.name ?? '';
+  const [previewTitle, setPreviewTitle] = useState<string | null>(null);
+  const title = previewTitle ?? (demo ? 'Micron' : event?.name ?? '');
+  // Design from Admin → Design; the admin editor's live preview overrides it via postMessage.
+  const [override, setOverride] = useState<Design | null>(null);
+  const design = override ?? normalizeDesign(event?.design, {fly_from: event?.fly_from, animation_speed: event?.animation_speed});
 
   // Engine lifecycle.
   useEffect(() => {
@@ -53,7 +58,32 @@ export default function LiveMosaic({eventId, initial, demo = false}: Props) {
   }, []);
 
   useEffect(() => { engineRef.current?.setGoal(goal); }, [goal]);
-  useEffect(() => { engineRef.current?.setFlyFrom(event?.fly_from ?? 'random'); }, [event?.fly_from]);
+  const designKey = JSON.stringify(design);
+  useEffect(() => { engineRef.current?.setDesign(design); }, [designKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // "Play reveal now" in admin bumps reveal_token; walls already open play it on their next poll.
+  const seenToken = useRef(initial?.event.reveal_token ?? 0);
+  useEffect(() => {
+    const t = event?.reveal_token ?? 0;
+    if (t > seenToken.current) { seenToken.current = t; engineRef.current?.reveal(); }
+  }, [event?.reveal_token]);
+
+  // Preview mode (inside the admin Design editor): settings and reveal arrive by postMessage.
+  useEffect(() => {
+    if (!preview) return;
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return;
+      if (e.data?.type === 'mosaic-design') {
+        setOverride(normalizeDesign(e.data.design));
+        if (typeof e.data.title === 'string') setPreviewTitle(e.data.title);
+        if (typeof e.data.target === 'string' && e.data.target) engineRef.current?.setTarget(e.data.target);
+      }
+      if (e.data?.type === 'mosaic-reveal') engineRef.current?.reveal();
+    };
+    window.addEventListener('message', onMsg);
+    window.parent?.postMessage({type: 'mosaic-preview-ready'}, window.location.origin);
+    return () => window.removeEventListener('message', onMsg);
+  }, [preview]);
 
   // Fullscreen = clean mode: header, QR, counter and captions disappear; the mosaic fills the screen.
   useEffect(() => {
@@ -121,18 +151,18 @@ export default function LiveMosaic({eventId, initial, demo = false}: Props) {
   const left = Math.max(0, goal - count);
 
   return (
-    <main className="fixed inset-0 overflow-hidden text-white" style={{fontFamily: FONT, background: '#1d0633', cursor: idle ? 'none' : undefined}}>
-      <Backdrop />
+    <main className="fixed inset-0 overflow-hidden text-white" style={{fontFamily: FONT, background: design.background, cursor: idle ? 'none' : undefined}}>
+      {design.glows && <Backdrop strength={design.glowStrength / 100} />}
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
 
       <header ref={headerRef} className={`pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between px-[3vw] pt-[3.2vh] transition-opacity duration-500 ${clean ? 'opacity-0' : ''}`}>
-        <div>
+        <div className={design.showTitle ? '' : 'invisible'}>
           <h1 className="text-[4.2vh] font-[750] leading-none tracking-[-0.02em]">{title}</h1>
           <p className="mt-[1vh] text-[2vh] font-[450] text-white/75">
-            {done ? 'Look closer: every tile is someone’s photo' : 'Every photo you add becomes part of the picture'}
+            {design.tagline || (done ? 'Look closer: every tile is someone’s photo' : 'Every photo you add becomes part of the picture')}
           </p>
         </div>
-        {qr && (
+        {qr && design.showQr && (
           <div className="flex items-center gap-[1.2vh] rounded-[2vh] bg-white p-[1vh] pr-[2vh] text-[#2b0a4a] shadow-[0_1.5vh_4vh_rgba(20,0,40,.35)]">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={qr} alt="QR code to add your photo" className="h-[11vh] w-[11vh]" />
@@ -141,7 +171,7 @@ export default function LiveMosaic({eventId, initial, demo = false}: Props) {
         )}
       </header>
 
-      <footer ref={footerRef} className={`pointer-events-none absolute inset-x-0 bottom-0 px-[3vw] pb-[3.2vh] transition-opacity duration-500 ${clean ? 'opacity-0' : ''}`}>
+      <footer ref={footerRef} className={`pointer-events-none absolute inset-x-0 bottom-0 px-[3vw] pb-[3.2vh] transition-opacity duration-500 ${clean || !design.showCounter ? 'opacity-0' : ''}`}>
         <div className="flex items-end justify-between gap-[3vw]">
           <p className="flex items-baseline gap-[1.2vh] leading-none">
             <span className="text-[7vh] font-[800] tabular-nums tracking-[-0.03em]">{count}</span>
@@ -153,13 +183,13 @@ export default function LiveMosaic({eventId, initial, demo = false}: Props) {
         </div>
         <div className="mt-[1.6vh] h-[1.1vh] overflow-hidden rounded-full bg-white/15">
           <div className="h-full rounded-full transition-[width] duration-700 ease-out"
-            style={{width: `${done ? 100 : pct}%`, background: 'linear-gradient(90deg,#00d1ff,#8a2be2 35%,#ff3d8b 70%,#ffb000)'}} />
+            style={{width: `${done ? 100 : pct}%`, background: `linear-gradient(90deg,#00d1ff,${design.accent} 55%,#ffb000)`}} />
         </div>
       </footer>
 
       {/* Who just joined, while their photo is flying in. */}
       <AnimatePresence>
-        {flying?.name && !done && !clean && (
+        {flying?.name && !done && !clean && design.showCaptions && (
           <motion.div key={flying.id} initial={{opacity: 0, y: 20}} animate={{opacity: 1, y: 0}} exit={{opacity: 0, y: -10}}
             className="pointer-events-none absolute left-1/2 top-[3.6vh] max-w-[40vw] -translate-x-1/2 truncate rounded-full bg-white px-[2.4vh] py-[1.1vh] text-[2.3vh] font-[650] text-[#2b0a4a] shadow-[0_1vh_3vh_rgba(20,0,40,.3)]">
             {flying.name} joined the picture{flying.message ? `: “${flying.message}”` : ''}
@@ -172,15 +202,16 @@ export default function LiveMosaic({eventId, initial, demo = false}: Props) {
         {phase === 'mosaic' && <RevealMessage text={event?.final_message || 'We did it together'} count={count} />}
       </AnimatePresence>
 
-      {demo && !clean && <DemoControls engine={engineRef} />}
+      {demo && !clean && !preview && <DemoControls engine={engineRef} />}
+      {preview && <PreviewFeeder engine={engineRef} />}
 
-      <button type="button" onClick={() => toggleRef.current()} aria-label={clean ? 'Exit fullscreen' : 'Fullscreen'}
+      {!preview && <button type="button" onClick={() => toggleRef.current()} aria-label={clean ? 'Exit fullscreen' : 'Fullscreen'}
         className={`absolute bottom-[3vh] right-[3vw] z-10 flex items-center gap-2 rounded-full bg-black/45 px-4 py-2.5 text-[15px] font-[600] text-white backdrop-blur transition-opacity duration-300 ${idle ? 'pointer-events-none opacity-0' : 'opacity-100'} ${clean ? '' : 'mb-[9vh]'}`}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
           {clean ? <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" /> : <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />}
         </svg>
         {clean ? 'Exit fullscreen (Esc)' : 'Fullscreen (F)'}
-      </button>
+      </button>}
     </main>
   );
 }
@@ -208,9 +239,9 @@ function RevealMessage({text, count}: {text: string; count: number}) {
 }
 
 /** Slow drifting colour glows behind everything (respects reduced motion). */
-function Backdrop() {
+function Backdrop({strength = 0.7}: {strength?: number}) {
   return (
-    <div aria-hidden className="absolute inset-0 overflow-hidden">
+    <div aria-hidden className="absolute inset-0 overflow-hidden" style={{opacity: Math.min(1, strength / 0.7)}}>
       <style>{`
         @keyframes drift1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(8vw,6vh) scale(1.15)}}
         @keyframes drift2{0%,100%{transform:translate(0,0) scale(1.1)}50%{transform:translate(-10vw,-4vh) scale(.95)}}
@@ -282,4 +313,19 @@ function DemoControls({engine}: {engine: React.RefObject<WallEngine | null>}) {
       <button type="button" onClick={() => engine.current?.reveal()} className="rounded-full px-3 py-2">Reveal now</button>
     </div>
   );
+}
+
+/** Preview inside the admin Design editor: a wall with sample photos and a slow stream of arrivals. */
+function PreviewFeeder({engine}: {engine: React.RefObject<WallEngine | null>}) {
+  const list = useRef<WallPhoto[]>([]);
+  useEffect(() => {
+    const add = (n: number, animate: boolean) => {
+      for (let k = 0; k < n; k++) { const i = list.current.length; list.current = [...list.current, {id: `pv-${i}`, thumb: fakePhoto(i), name: i % 2 ? NAMES[i % NAMES.length] : null, message: i % 4 === 1 ? 'Hello!' : null}]; }
+      engine.current?.sync(list.current, animate);
+    };
+    const t0 = setTimeout(() => add(18, false), 300);
+    const iv = setInterval(() => { if (list.current.length < 60) add(1, true); }, 3500);
+    return () => { clearTimeout(t0); clearInterval(iv); };
+  }, [engine]);
+  return null;
 }
