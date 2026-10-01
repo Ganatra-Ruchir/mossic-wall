@@ -116,6 +116,34 @@ begin
  update events set approved_count=(select count(*) from submissions where event_id=s.event_id and status='approved' and tile_index is not null),updated_at=now() where id=s.event_id;
  return s;
 end $$;
+
+-- Delete forever: free the tile (a waiting photo takes it), remove the image files, then the record.
+create or replace function delete_submission(p_id uuid) returns void language plpgsql as $$
+declare s submissions;
+begin
+ select * into s from submissions where id=p_id;
+ if not found then return; end if;
+ if s.status='approved' then perform reject_submission(p_id); end if;
+ delete from images where id in (
+   (substring(s.image_url from '/api/img/([0-9a-f-]{36})'))::uuid,
+   (substring(s.thumbnail_url from '/api/img/([0-9a-f-]{36})'))::uuid);
+ delete from submissions where id=p_id;
+end $$;
+
+-- Delete every guest photo of an event (keeps the target image and settings).
+create or replace function clear_event_photos(p_event uuid) returns integer language plpgsql as $$
+declare n integer;
+begin
+ perform 1 from events where id=p_event for update;
+ delete from images where id in (
+   select (substring(image_url from '/api/img/([0-9a-f-]{36})'))::uuid from submissions where event_id=p_event
+   union all
+   select (substring(thumbnail_url from '/api/img/([0-9a-f-]{36})'))::uuid from submissions where event_id=p_event);
+ delete from submissions where event_id=p_event;
+ get diagnostics n = row_count;
+ update events set approved_count=0,updated_at=now() where id=p_event;
+ return n;
+end $$;
 `;
 
 async function migrate() {
